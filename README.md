@@ -141,6 +141,9 @@ what gets detected.
   * `keep my boxes` — replace old predictions, keep anything you drew or edited
   * `replace all` — start over from the model's output
   * `append` — add to what is there
+* **Nudge** — arrow keys move the selected box a pixel at a time, `Shift`+arrows
+  resize it. This is the way to adjust a box whose handles sit off-screen or
+  under other boxes, which happens a lot with dense predictions.
 * **Review flow** — `V` marks the image reviewed and jumps to the next one.
   Reviewed images are skipped by `Run on all…`, so a second pass only touches
   what you have not checked.
@@ -148,8 +151,19 @@ what gets detected.
 Boxes are dashed while they are the model's and solid once you have touched them;
 the dots in the image list are grey (new), amber (predicted) and green (reviewed).
 
+The cursor tells you what a drag will do: a resize arrow over a handle, a move
+cursor inside a box, a crosshair where a drag would draw a new one. The box under
+the cursor is highlighted, on the canvas and in the list.
+
 Everything saves itself half a second after you stop editing — `Ctrl+S` forces it,
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, scroll zooms, space-drag pans, `F` fits.
+
+### Rearranging the panels
+
+Drag the bar between any two panes to resize them — the sidebars, and the
+Classes/Boxes/Shortcuts panels within the right one. Click a panel's heading to
+collapse it; collapsing Shortcuts once you know them gives the box list the whole
+sidebar. Sizes and collapsed panels are remembered in your browser.
 
 ## Where annotations live
 
@@ -277,8 +291,16 @@ The GUI is a client of a small JSON API on the same port, so scripts can drive i
 ## Tests
 
 ```bash
-pytest
+pytest                                        # unit, API and runtime tests
+pip install playwright && playwright install chromium
+pytest tests/test_gui.py                      # drives the GUI in a real browser
 ```
+
+The browser tests cover what the others cannot see: that a long box list scrolls
+inside its panel instead of covering the panel below (where it would swallow the
+clicks meant for those rows), that predicted boxes can be selected and edited,
+and that the cursor advertises what a drag will do. They skip themselves if no
+chromium is installed.
 
 The suite covers the store, merge policies, exporters and the HTTP API. The ONNX
 and OpenVINO backends are run for real — a synthetic YOLO graph is built,

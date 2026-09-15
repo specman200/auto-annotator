@@ -23,6 +23,7 @@ openvino = ["openvino>=2023.3"]
 ultralytics = ["ultralytics>=8.1"]
 torch = ["torch>=2.0", "torchvision>=0.15"]
 dev = ["pytest>=7.4", "httpx>=0.27"]
+gui-tests = ["playwright>=1.40"]
 
 [project.scripts]
 auto-annotator = "auto_annotator.cli:main"

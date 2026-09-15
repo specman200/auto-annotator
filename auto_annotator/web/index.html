@@ -53,7 +53,7 @@
 </header>
 
 <main class="layout">
-  <aside class="sidebar left">
+  <aside class="sidebar left" id="sidebar-left">
     <div class="sidebar-head">
       <input type="search" id="search" placeholder="filter images…" />
       <div class="chips" id="status-filters">
@@ -66,6 +66,8 @@
     <ul class="image-list" id="image-list"></ul>
     <div class="sidebar-foot" id="project-stats"></div>
   </aside>
+
+  <div class="splitter vertical" id="split-left" title="Drag to resize"></div>
 
   <section class="stage">
     <div class="canvas-wrap" id="canvas-wrap">
@@ -88,35 +90,49 @@
     </div>
   </section>
 
-  <aside class="sidebar right">
-    <div class="panel">
-      <h2>Classes</h2>
-      <div class="class-list" id="class-list"></div>
-      <form class="add-class" id="add-class-form">
-        <input id="new-class" placeholder="add a class…" autocomplete="off" />
-        <button type="submit">+</button>
-      </form>
-      <p class="hint">Click a class to relabel the selected box. Keys 1–9 do the same.</p>
-    </div>
+  <div class="splitter vertical" id="split-right" title="Drag to resize"></div>
 
-    <div class="panel grow">
-      <h2>Boxes <span class="count" id="box-count">0</span></h2>
-      <ul class="annotation-list" id="annotation-list"></ul>
-    </div>
+  <aside class="sidebar right" id="sidebar-right">
+    <section class="panel" id="panel-classes">
+      <h2 class="panel-head"><span class="caret">▾</span>Classes</h2>
+      <div class="panel-body">
+        <div class="class-list" id="class-list"></div>
+        <form class="add-class" id="add-class-form">
+          <input id="new-class" placeholder="add a class…" autocomplete="off" />
+          <button type="submit">+</button>
+        </form>
+        <p class="hint">Click a class to relabel the selected box. Keys 1–9 do the same.</p>
+      </div>
+    </section>
 
-    <div class="panel">
-      <h2>Shortcuts</h2>
-      <dl class="shortcuts">
-        <dt>R</dt><dd>run model on this image</dd>
-        <dt>N / P</dt><dd>next / previous image</dd>
-        <dt>V</dt><dd>mark reviewed, go next</dd>
-        <dt>1–9</dt><dd>set class of selection</dd>
-        <dt>Del</dt><dd>delete selected box</dd>
-        <dt>Ctrl+Z</dt><dd>undo (Shift to redo)</dd>
-        <dt>Ctrl+S</dt><dd>save now</dd>
-        <dt>F / Esc</dt><dd>fit view / deselect</dd>
-      </dl>
-    </div>
+    <div class="splitter horizontal" data-resizes="panel-classes" title="Drag to resize"></div>
+
+    <section class="panel grow" id="panel-boxes">
+      <h2 class="panel-head"><span class="caret">▾</span>Boxes <span class="count" id="box-count">0</span></h2>
+      <div class="panel-body">
+        <ul class="annotation-list" id="annotation-list"></ul>
+      </div>
+    </section>
+
+    <div class="splitter horizontal" data-resizes="panel-shortcuts" data-from-bottom
+         title="Drag to resize"></div>
+
+    <section class="panel" id="panel-shortcuts">
+      <h2 class="panel-head"><span class="caret">▾</span>Shortcuts</h2>
+      <div class="panel-body">
+        <dl class="shortcuts">
+          <dt>R</dt><dd>run model on this image</dd>
+          <dt>N / P</dt><dd>next / previous image</dd>
+          <dt>V</dt><dd>mark reviewed, go next</dd>
+          <dt>1–9</dt><dd>set class of selection</dd>
+          <dt>Del</dt><dd>delete selected box</dd>
+          <dt>←↑↓→</dt><dd>nudge box (Shift: resize)</dd>
+          <dt>Ctrl+Z</dt><dd>undo (Shift to redo)</dd>
+          <dt>Ctrl+S</dt><dd>save now</dd>
+          <dt>F / Esc</dt><dd>fit view / deselect</dd>
+        </dl>
+      </div>
+    </section>
   </aside>
 </main>
 

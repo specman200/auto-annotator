@@ -2,7 +2,8 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const HANDLE = 7;          // resize-handle half-size, in screen pixels
+const HANDLE = 9;          // resize-handle size, in screen pixels
+const GRAB = 10;           // how far from a handle still counts as grabbing it
 const MIN_BOX = 3;         // ignore drags smaller than this (screen pixels)
 const MIN_BOX_PX = 2;      // ...and smaller than this in image pixels once clamped
 const SAVE_DELAY = 500;    // debounce for autosave
@@ -20,6 +21,7 @@ const state = {
   merge: 'keep-human',
   view: { scale: 1, x: 0, y: 0 },
   drag: null,         // active pointer interaction
+  hoveredId: null,    // box under the cursor, highlighted for discoverability
   undo: [],
   redo: [],
   dirty: false,
@@ -214,6 +216,8 @@ function selectAnnotation(id, rebuild = true) {
   state.selectedId = id;
   if (rebuild) {
     renderAnnotations();
+    $('annotation-list').querySelector(`[data-id="${id}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
   } else {
     for (const row of $('annotation-list').children) {
       row.classList.toggle('selected', row.dataset.id === id);
@@ -301,7 +305,8 @@ function render() {
   ctx.drawImage(img, x, y, img.naturalWidth * scale, img.naturalHeight * scale);
 
   for (const annotation of state.record ? state.record.annotations : []) {
-    drawBox(annotation, annotation.id === state.selectedId);
+    drawBox(annotation, annotation.id === state.selectedId,
+            annotation.id === state.hoveredId);
   }
   if (state.drag && state.drag.mode === 'draw' && state.drag.box) {
     const { x1, y1, x2, y2 } = state.drag.box;
@@ -315,7 +320,7 @@ function render() {
   }
 }
 
-function drawBox(annotation, selected) {
+function drawBox(annotation, selected, hovered = false) {
   const px = boxPixels(annotation.box);
   const a = imageToScreen(px.x1, px.y1);
   const b = imageToScreen(px.x2, px.y2);
@@ -323,8 +328,12 @@ function drawBox(annotation, selected) {
   const color = labelColor(annotation.label);
 
   ctx.save();
-  ctx.lineWidth = selected ? 2.5 : 1.5;
+  ctx.lineWidth = selected ? 2.5 : (hovered ? 2 : 1.5);
   ctx.strokeStyle = color;
+  if (hovered && !selected) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 6;
+  }
   if (annotation.source === 'model') ctx.setLineDash([6, 3]);
   ctx.strokeRect(a.x, a.y, w, h);
   ctx.setLineDash([]);
@@ -372,8 +381,8 @@ function handleAt(point) {
   const screen = imageToScreen(point.x, point.y);
   const points = handlePoints(a, b);
   for (let i = 0; i < points.length; i++) {
-    if (Math.abs(screen.x - points[i][0]) <= HANDLE &&
-        Math.abs(screen.y - points[i][1]) <= HANDLE) {
+    if (Math.abs(screen.x - points[i][0]) <= GRAB &&
+        Math.abs(screen.y - points[i][1]) <= GRAB) {
       return HANDLE_NAMES[i];
     }
   }
@@ -423,12 +432,10 @@ canvas.addEventListener('pointerdown', (event) => {
 
   const hit = annotationAt(point);
   if (hit) {
-    state.selectedId = hit.id;
     pushUndo();
     state.drag = { mode: 'move', annotation: hit, start: point,
                    origin: { ...hit.box } };
-    renderAnnotations();
-    render();
+    selectAnnotation(hit.id);
     return;
   }
 
@@ -438,6 +445,18 @@ canvas.addEventListener('pointerdown', (event) => {
   render();
 });
 
+const HANDLE_CURSORS = {
+  nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize',
+  n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
+};
+
+function updateCursor(point) {
+  if (spaceDown) { canvas.style.cursor = 'grab'; return; }
+  const handle = handleAt(point);
+  if (handle) { canvas.style.cursor = HANDLE_CURSORS[handle]; return; }
+  canvas.style.cursor = annotationAt(point) ? 'move' : 'crosshair';
+}
+
 canvas.addEventListener('pointermove', (event) => {
   const point = pointerPosition(event);
   if (img.naturalWidth) {
@@ -445,7 +464,19 @@ canvas.addEventListener('pointermove', (event) => {
       `${Math.round(point.x)}, ${Math.round(point.y)} px`;
   }
   const drag = state.drag;
-  if (!drag) return;
+  if (!drag) {
+    updateCursor(point);
+    const hovered = annotationAt(point);
+    const hoveredId = hovered ? hovered.id : null;
+    if (hoveredId !== state.hoveredId) {
+      state.hoveredId = hoveredId;
+      for (const row of $('annotation-list').children) {
+        row.classList.toggle('hovered', row.dataset.id === hoveredId);
+      }
+      render();
+    }
+    return;
+  }
 
   if (drag.mode === 'pan') {
     state.view.x = drag.originX + (event.clientX - drag.startX);
@@ -565,6 +596,42 @@ function deleteAnnotation(id) {
   if (state.selectedId === id) state.selectedId = null;
   markDirty();
   renderAnnotations();
+  render();
+}
+
+/* Arrow keys move the selected box; with Shift they move its bottom-right
+   corner, which is the way to adjust a box whose handles are off-screen or
+   buried under other boxes. */
+function nudgeSelection(key, resize) {
+  const annotation = selectedAnnotation();
+  if (!annotation || !img.naturalWidth) return;
+  const stepX = 1 / img.naturalWidth;
+  const stepY = 1 / img.naturalHeight;
+  const dx = (key === 'ArrowRight' ? stepX : key === 'ArrowLeft' ? -stepX : 0);
+  const dy = (key === 'ArrowDown' ? stepY : key === 'ArrowUp' ? -stepY : 0);
+
+  if (!state.nudging) {   // one undo entry per burst of arrow presses
+    pushUndo();
+    state.nudging = true;
+    clearTimeout(state.nudgeTimer);
+  }
+  clearTimeout(state.nudgeTimer);
+  state.nudgeTimer = setTimeout(() => { state.nudging = false; }, 700);
+
+  const box = { ...annotation.box };
+  if (resize) {
+    box.x2 = Math.min(1, Math.max(box.x1 + stepX, box.x2 + dx));
+    box.y2 = Math.min(1, Math.max(box.y1 + stepY, box.y2 + dy));
+  } else {
+    const width = box.x2 - box.x1, height = box.y2 - box.y1;
+    box.x1 = Math.max(0, Math.min(1 - width, box.x1 + dx));
+    box.y1 = Math.max(0, Math.min(1 - height, box.y1 + dy));
+    box.x2 = box.x1 + width;
+    box.y2 = box.y1 + height;
+  }
+  annotation.box = box;
+  annotation.source = 'human';
+  markDirty();
   render();
 }
 
@@ -720,6 +787,125 @@ async function markReviewed() {
   await step(1);
 }
 
+/* ------------------------------------------------------------------ layout */
+/* Pane sizes and collapsed panels are per-browser conveniences: if storage is
+   unavailable the layout just starts at its defaults. */
+
+const LAYOUT_KEY = 'auto-annotator.layout';
+
+function loadLayout() {
+  try {
+    return JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function saveLayout(patch) {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...loadLayout(), ...patch }));
+  } catch (_) {
+    /* private window or blocked storage: sizing simply will not persist */
+  }
+}
+
+function applyLayout() {
+  const layout = loadLayout();
+  const root = document.documentElement;
+  if (layout.leftWidth) root.style.setProperty('--left-width', `${layout.leftWidth}px`);
+  if (layout.rightWidth) root.style.setProperty('--right-width', `${layout.rightWidth}px`);
+  for (const [id, height] of Object.entries(layout.panels || {})) {
+    const panel = document.getElementById(id);
+    if (panel && !panel.classList.contains('grow')) {
+      panel.style.flexBasis = `${height}px`;
+    }
+  }
+  for (const id of layout.collapsed || []) {
+    document.getElementById(id)?.classList.add('collapsed');
+  }
+}
+
+function setUpSidebarResize(splitter, sidebarId, key, fromRight) {
+  const sidebar = $(sidebarId);
+  splitter.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add('dragging');
+    const startX = event.clientX;
+    const startWidth = sidebar.getBoundingClientRect().width;
+
+    const move = (moveEvent) => {
+      const delta = fromRight ? startX - moveEvent.clientX : moveEvent.clientX - startX;
+      const width = Math.round(Math.max(150, Math.min(640, startWidth + delta)));
+      document.documentElement.style.setProperty(
+        fromRight ? '--right-width' : '--left-width', `${width}px`
+      );
+      resizeCanvas();
+    };
+    const up = () => {
+      splitter.classList.remove('dragging');
+      splitter.removeEventListener('pointermove', move);
+      splitter.removeEventListener('pointerup', up);
+      saveLayout({ [key]: sidebar.getBoundingClientRect().width });
+      resizeCanvas();
+    };
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up);
+  });
+}
+
+function setUpPanelResize(splitter) {
+  const panel = document.getElementById(splitter.dataset.resizes);
+  if (!panel) return;
+  const fromBottom = splitter.hasAttribute('data-from-bottom');
+
+  splitter.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    splitter.setPointerCapture(event.pointerId);
+    splitter.classList.add('dragging');
+    if (panel.classList.contains('collapsed')) togglePanel(panel);
+    const startY = event.clientY;
+    const startHeight = panel.getBoundingClientRect().height;
+
+    const move = (moveEvent) => {
+      const delta = fromBottom ? startY - moveEvent.clientY : moveEvent.clientY - startY;
+      const height = Math.round(Math.max(38, Math.min(700, startHeight + delta)));
+      panel.style.flexBasis = `${height}px`;
+    };
+    const up = () => {
+      splitter.classList.remove('dragging');
+      splitter.removeEventListener('pointermove', move);
+      splitter.removeEventListener('pointerup', up);
+      const panels = { ...(loadLayout().panels || {}) };
+      panels[panel.id] = panel.getBoundingClientRect().height;
+      saveLayout({ panels });
+    };
+    splitter.addEventListener('pointermove', move);
+    splitter.addEventListener('pointerup', up);
+  });
+}
+
+function togglePanel(panel) {
+  panel.classList.toggle('collapsed');
+  if (panel.classList.contains('collapsed')) {
+    panel.style.flexBasis = '';
+  }
+  const collapsed = [...document.querySelectorAll('.panel.collapsed')].map((p) => p.id);
+  saveLayout({ collapsed });
+}
+
+function setUpLayout() {
+  applyLayout();
+  setUpSidebarResize($('split-left'), 'sidebar-left', 'leftWidth', false);
+  setUpSidebarResize($('split-right'), 'sidebar-right', 'rightWidth', true);
+  for (const splitter of document.querySelectorAll('.splitter.horizontal')) {
+    setUpPanelResize(splitter);
+  }
+  for (const head of document.querySelectorAll('.panel-head')) {
+    head.onclick = () => togglePanel(head.closest('.panel'));
+  }
+}
+
 /* ------------------------------------------------------------------ wiring */
 
 $('conf').addEventListener('input', (event) => {
@@ -801,6 +987,12 @@ document.addEventListener('keydown', (event) => {
     return;
   }
 
+  if (event.key.startsWith('Arrow') && selectedAnnotation() && !inSelect) {
+    event.preventDefault();
+    nudgeSelection(event.key, event.shiftKey);
+    return;
+  }
+
   switch (event.key) {
     case 'Delete': case 'Backspace':
       if (state.selectedId) { event.preventDefault(); deleteAnnotation(state.selectedId); }
@@ -830,5 +1022,6 @@ window.addEventListener('beforeunload', (event) => {
 
 window.addEventListener('resize', resizeCanvas);
 
+setUpLayout();
 resizeCanvas();
 loadProject().catch((error) => toast(`could not load project: ${error.message}`, true));
