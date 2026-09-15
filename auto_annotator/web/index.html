@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Auto Annotator</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">▣</span>
+    <div>
+      <div class="title">Auto Annotator</div>
+      <div class="subtitle" id="project-root">loading…</div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <label class="field" title="Detections below this score are discarded">
+      <span>conf</span>
+      <input type="range" id="conf" min="0.05" max="0.95" step="0.05" value="0.25" />
+      <output id="conf-value">0.25</output>
+    </label>
+
+    <label class="field" title="What happens to boxes the image already has">
+      <span>merge</span>
+      <select id="merge">
+        <option value="keep-human">keep my boxes</option>
+        <option value="replace">replace all</option>
+        <option value="append">append</option>
+      </select>
+    </label>
+
+    <button id="btn-predict" class="primary" title="Run the model on this image (R)">
+      Run on image
+    </button>
+    <button id="btn-predict-all" title="Run the model on every unreviewed image">
+      Run on all…
+    </button>
+
+    <div class="spacer"></div>
+
+    <select id="export-format" title="Export format">
+      <option value="coco">COCO</option>
+      <option value="yolo">YOLO</option>
+      <option value="voc">Pascal VOC</option>
+      <option value="csv">CSV</option>
+    </select>
+    <button id="btn-export">Export</button>
+    <span id="save-state" class="save-state">saved</span>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="sidebar left">
+    <div class="sidebar-head">
+      <input type="search" id="search" placeholder="filter images…" />
+      <div class="chips" id="status-filters">
+        <button class="chip active" data-status="all">all</button>
+        <button class="chip" data-status="new">new</button>
+        <button class="chip" data-status="predicted">predicted</button>
+        <button class="chip" data-status="reviewed">reviewed</button>
+      </div>
+    </div>
+    <ul class="image-list" id="image-list"></ul>
+    <div class="sidebar-foot" id="project-stats"></div>
+  </aside>
+
+  <section class="stage">
+    <div class="canvas-wrap" id="canvas-wrap">
+      <canvas id="canvas"></canvas>
+      <div class="empty" id="canvas-empty">Pick an image on the left to start.</div>
+    </div>
+    <div class="statusbar">
+      <button id="btn-prev" title="Previous image (P / ←)">◀</button>
+      <span id="image-position">–</span>
+      <button id="btn-next" title="Next image (N / →)">▶</button>
+      <span class="divider"></span>
+      <button id="btn-review" title="Mark reviewed and go to the next image (V)">
+        ✓ Mark reviewed
+      </button>
+      <button id="btn-fit" title="Fit image to the window (F)">Fit</button>
+      <span class="divider"></span>
+      <span class="hint" id="cursor-readout"></span>
+      <span class="spacer"></span>
+      <span class="hint">drag on empty space to draw · scroll to zoom · space+drag to pan</span>
+    </div>
+  </section>
+
+  <aside class="sidebar right">
+    <div class="panel">
+      <h2>Classes</h2>
+      <div class="class-list" id="class-list"></div>
+      <form class="add-class" id="add-class-form">
+        <input id="new-class" placeholder="add a class…" autocomplete="off" />
+        <button type="submit">+</button>
+      </form>
+      <p class="hint">Click a class to relabel the selected box. Keys 1–9 do the same.</p>
+    </div>
+
+    <div class="panel grow">
+      <h2>Boxes <span class="count" id="box-count">0</span></h2>
+      <ul class="annotation-list" id="annotation-list"></ul>
+    </div>
+
+    <div class="panel">
+      <h2>Shortcuts</h2>
+      <dl class="shortcuts">
+        <dt>R</dt><dd>run model on this image</dd>
+        <dt>N / P</dt><dd>next / previous image</dd>
+        <dt>V</dt><dd>mark reviewed, go next</dd>
+        <dt>1–9</dt><dd>set class of selection</dd>
+        <dt>Del</dt><dd>delete selected box</dd>
+        <dt>Ctrl+Z</dt><dd>undo (Shift to redo)</dd>
+        <dt>Ctrl+S</dt><dd>save now</dd>
+        <dt>F / Esc</dt><dd>fit view / deselect</dd>
+      </dl>
+    </div>
+  </aside>
+</main>
+
+<div class="modal" id="job-modal" hidden>
+  <div class="modal-body">
+    <h2>Running the model</h2>
+    <div class="progress"><div class="progress-bar" id="job-bar"></div></div>
+    <p id="job-text">starting…</p>
+    <div class="modal-actions">
+      <button id="job-cancel">Cancel</button>
+      <button id="job-close" class="primary" hidden>Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
