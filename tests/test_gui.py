@@ -351,3 +351,116 @@ def test_the_gui_is_served_with_revalidation(gui):
     page.wait_for_timeout(300)
     for name in ("app.js", "style.css"):
         assert "no-cache" in headers.get(name, ""), f"{name}: {headers.get(name)!r}"
+
+
+@pytest.fixture
+def one_big_box(gui):
+    """An image holding a single box that covers most of it."""
+    page, errors = gui
+    page.evaluate(
+        """async () => {
+            await fetch('/api/images/img_1.png/annotations', {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({annotations: [{label: 'cat',
+                    box: {x1: .1, y1: .1, x2: .9, y2: .9}, score: .9, source: 'model'}],
+                    status: 'predicted'})});
+        }"""
+    )
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(600)
+    return page, errors
+
+
+def canvas_point(page, nx, ny):
+    return page.evaluate(
+        """([nx, ny]) => { const r = canvas.getBoundingClientRect();
+            const p = imageToScreen(nx * img.naturalWidth, ny * img.naturalHeight);
+            return {x: r.left + p.x, y: r.top + p.y}; }""",
+        [nx, ny],
+    )
+
+
+def test_shift_drag_draws_a_box_inside_another(one_big_box):
+    """Nested labels (a wheel inside a car) need a drag that beats the move gesture."""
+    page, _ = one_big_box
+    parent = page.evaluate("state.record.annotations[0].box")
+    start, end = canvas_point(page, 0.3, 0.3), canvas_point(page, 0.5, 0.5)
+
+    page.keyboard.down("Shift")
+    page.mouse.move(start["x"], start["y"])
+    page.mouse.down()
+    page.mouse.move(end["x"], end["y"], steps=10)
+    page.mouse.up()
+    page.keyboard.up("Shift")
+    page.wait_for_timeout(500)
+
+    boxes = page.evaluate("state.record.annotations")
+    assert len(boxes) == 2, "shift+drag should add a box, not move the parent"
+    assert boxes[0]["box"] == parent, "the parent must not move"
+    child = boxes[1]["box"]
+    assert child["x1"] >= parent["x1"] and child["x2"] <= parent["x2"]
+    assert child["y1"] >= parent["y1"] and child["y2"] <= parent["y2"]
+    assert page.evaluate("state.selectedId") == boxes[1]["id"]
+
+
+def test_a_plain_drag_inside_a_box_still_moves_it(one_big_box):
+    page, _ = one_big_box
+    before = page.evaluate("state.record.annotations[0].box")
+    start, end = canvas_point(page, 0.3, 0.3), canvas_point(page, 0.4, 0.4)
+    page.mouse.move(start["x"], start["y"])
+    page.mouse.down()
+    page.mouse.move(end["x"], end["y"], steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(500)
+    assert page.evaluate("state.record.annotations.length") == 1
+    assert page.evaluate("state.record.annotations[0].box.x1") > before["x1"]
+
+
+def test_draw_mode_nests_without_holding_shift(one_big_box):
+    page, _ = one_big_box
+    page.keyboard.press("d")
+    page.wait_for_timeout(200)
+    assert page.evaluate("state.drawMode") is True
+
+    start, end = canvas_point(page, 0.6, 0.6), canvas_point(page, 0.75, 0.78)
+    page.mouse.move(start["x"], start["y"])
+    page.mouse.down()
+    page.mouse.move(end["x"], end["y"], steps=10)
+    page.mouse.up()
+    page.wait_for_timeout(500)
+    assert page.evaluate("state.record.annotations.length") == 2
+
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(200)
+    assert page.evaluate("state.drawMode") is False
+
+
+def test_an_edit_during_a_save_is_not_lost(one_big_box):
+    """A slow save's reply must not overwrite boxes edited while it was in flight."""
+    page, _ = one_big_box
+    page.evaluate(
+        """() => {
+            const original = window.fetch;
+            window.fetch = async (...args) => {
+                const response = await original(...args);
+                if (String(args[0]).includes('/annotations')) {
+                    await new Promise((resolve) => setTimeout(resolve, 900));
+                }
+                return response;
+            };
+        }"""
+    )
+    page.evaluate(
+        """() => { const a = state.record.annotations[0];
+            a.box = {...a.box, x1: a.box.x1 + 0.2, x2: a.box.x2 + 0.2}; markDirty(); }"""
+    )
+    page.wait_for_timeout(600)
+    page.evaluate(
+        """() => { const a = state.record.annotations[0];
+            a.box = {...a.box, y1: a.box.y1 + 0.3, y2: a.box.y2 + 0.3}; markDirty(); }"""
+    )
+    page.wait_for_timeout(3000)
+
+    box = page.evaluate("state.record.annotations[0].box")
+    assert box["x1"] == pytest.approx(0.3, abs=1e-6), "first edit lost"
+    assert box["y1"] == pytest.approx(0.4, abs=1e-6), "second edit lost to a stale reply"

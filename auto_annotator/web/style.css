@@ -115,6 +115,9 @@ canvas.panning { cursor: grabbing; }
   padding: 6px 10px; background: var(--panel); border-top: 1px solid var(--line);
 }
 .statusbar .divider { width: 1px; height: 18px; background: var(--line); }
+.statusbar button.active {
+  background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600;
+}
 .hint { color: var(--muted); font-size: 11px; }
 
 /* ------------------------------------------------------------------ panels */

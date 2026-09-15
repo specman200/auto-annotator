@@ -158,6 +158,21 @@ the cursor is highlighted, on the canvas and in the list.
 Everything saves itself half a second after you stop editing — `Ctrl+S` forces it,
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, scroll zooms, space-drag pans, `F` fits.
 
+### Boxes inside boxes
+
+A plain drag that starts inside a box moves that box, so nesting a label inside
+another one (a wheel inside a car, a face inside a person) needs one of these:
+
+* **Shift+drag** — draws a new box even when the drag starts inside an existing
+  one. The parent stays put; the new box is selected, ready to relabel.
+* **Draw mode** (`D`, or the ✛ Draw button) — every drag draws, no Shift needed.
+  Good for a run of nested labels. `Esc` leaves it.
+
+Nest as deep as you like: boxes are independent annotations, so a child is just a
+box that happens to sit inside another. Exports carry no parent/child link — if
+the relationship matters downstream, encode it in the class names
+(`car`, `car.wheel`).
+
 ### Overlapping boxes
 
 Clicking picks the smallest box under the cursor. Click the same spot again to

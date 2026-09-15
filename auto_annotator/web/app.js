@@ -22,9 +22,11 @@ const state = {
   view: { scale: 1, x: 0, y: 0 },
   drag: null,         // active pointer interaction
   hoveredId: null,    // box under the cursor, highlighted for discoverability
+  drawMode: false,    // draw new boxes even when the drag starts inside one
   undo: [],
   redo: [],
   dirty: false,
+  revision: 0,        // bumped on every local edit, to spot stale save replies
   saveTimer: null,
   job: null,
 };
@@ -451,14 +453,18 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
 
-  const handle = handleAt(point);
+  // Drawing a box inside another one is how nested labels get made (a wheel
+  // inside a car), so a forced draw has to beat the move and resize gestures.
+  const forceDraw = event.shiftKey || state.drawMode;
+
+  const handle = forceDraw ? null : handleAt(point);
   if (handle) {
     pushUndo();
     state.drag = { mode: 'resize', handle, annotation: selectedAnnotation() };
     return;
   }
 
-  const hit = pickAnnotation(point);
+  const hit = forceDraw ? null : pickAnnotation(point);
   if (hit) {
     pushUndo();
     state.drag = { mode: 'move', annotation: hit, start: point,
@@ -478,8 +484,9 @@ const HANDLE_CURSORS = {
   n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize',
 };
 
-function updateCursor(point) {
+function updateCursor(point, shiftKey = false) {
   if (spaceDown) { canvas.style.cursor = 'grab'; return; }
+  if (shiftKey || state.drawMode) { canvas.style.cursor = 'crosshair'; return; }
   const handle = handleAt(point);
   if (handle) { canvas.style.cursor = HANDLE_CURSORS[handle]; return; }
   canvas.style.cursor = annotationAt(point) ? 'move' : 'crosshair';
@@ -493,7 +500,7 @@ canvas.addEventListener('pointermove', (event) => {
   }
   const drag = state.drag;
   if (!drag) {
-    updateCursor(point);
+    updateCursor(point, event.shiftKey);
     const hovered = annotationAt(point);
     const hoveredId = hovered ? hovered.id : null;
     if (hoveredId !== state.hoveredId) {
@@ -674,8 +681,16 @@ function applyLabel(label) {
   render();
 }
 
+function setDrawMode(enabled) {
+  state.drawMode = enabled;
+  $('btn-draw-mode').classList.toggle('active', enabled);
+  canvas.style.cursor = enabled ? 'crosshair' : 'default';
+  if (enabled) toast('draw mode: drags make new boxes, even inside existing ones');
+}
+
 function markDirty() {
   state.dirty = true;
+  state.revision++;
   $('save-state').textContent = 'unsaved';
   $('save-state').classList.add('dirty');
   clearTimeout(state.saveTimer);
@@ -688,19 +703,34 @@ async function save() {
   const payload = { annotations: state.record.annotations };
   // Touching a prediction means a human has looked at it.
   if (state.record.status === 'new') payload.status = 'predicted';
+
+  // Remember what we are saving: edits made while the request is in flight
+  // must not be thrown away when the reply lands.
+  const revision = state.revision;
+  const path = state.current;
+
   try {
-    const data = await api(`/api/images/${encodeURI(state.current)}/annotations`, {
+    const data = await api(`/api/images/${encodeURI(path)}/annotations`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
-    state.record = data.image;
     state.classes = data.classes;
-    state.dirty = false;
-    $('save-state').textContent = 'saved';
-    $('save-state').classList.remove('dirty');
     renderStats(data.stats);
     renderClasses();
     renderImageList();
+
+    if (state.current !== path) return;   // the user has moved on to another image
+
+    if (state.revision !== revision) {
+      // Edited again mid-save (an undo, say). Keep the newer boxes and save them.
+      state.record.status = data.image.status;
+      markDirty();
+      return;
+    }
+    state.record = data.image;
+    state.dirty = false;
+    $('save-state').textContent = 'saved';
+    $('save-state').classList.remove('dirty');
   } catch (error) {
     toast(`save failed: ${error.message}`, true);
   }
@@ -1044,6 +1074,7 @@ $('btn-prev').onclick = () => step(-1);
 $('btn-next').onclick = () => step(1);
 $('btn-review').onclick = markReviewed;
 $('btn-fit').onclick = () => { fitView(); render(); };
+$('btn-draw-mode').onclick = () => setDrawMode(!state.drawMode);
 $('job-cancel').onclick = () => {
   if (state.job) api(`/api/jobs/${state.job}/cancel`, { method: 'POST' }).catch(() => {});
 };
@@ -1119,7 +1150,9 @@ document.addEventListener('keydown', (event) => {
       if (state.selectedId) { event.preventDefault(); deleteAnnotation(state.selectedId); }
       break;
     case 'Escape':
+      if (state.drawMode) setDrawMode(false);
       state.selectedId = null; renderAnnotations(); render(); break;
+    case 'd': case 'D': setDrawMode(!state.drawMode); break;
     case 'f': case 'F': fitView(); render(); break;
     case 'n': case 'N': case 'ArrowRight': step(1); break;
     case 'p': case 'P': case 'ArrowLeft': step(-1); break;

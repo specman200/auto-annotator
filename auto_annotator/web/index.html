@@ -83,13 +83,17 @@
         ✓ Mark reviewed
       </button>
       <button id="btn-fit" title="Fit image to the window (F)">Fit</button>
+      <button id="btn-draw-mode"
+              title="Draw new boxes even inside existing ones (D) — or hold Shift">
+        ✛ Draw
+      </button>
       <button id="btn-reset-layout" title="Restore the default panel sizes">
         Reset layout
       </button>
       <span class="divider"></span>
       <span class="hint" id="cursor-readout"></span>
       <span class="spacer"></span>
-      <span class="hint">drag on empty space to draw · click again to cycle stacked boxes · scroll to zoom · space+drag to pan</span>
+      <span class="hint">drag to draw · shift+drag inside a box to nest · click again to cycle stacked · scroll to zoom</span>
     </div>
   </section>
 
@@ -130,6 +134,8 @@
           <dt>1–9</dt><dd>set class of selection</dd>
           <dt>Del</dt><dd>delete selected box</dd>
         <dt>click</dt><dd>again to cycle stacked boxes</dd>
+        <dt>Shift+drag</dt><dd>draw a box inside another</dd>
+        <dt>D</dt><dd>draw mode (no Shift needed)</dd>
           <dt>←↑↓→</dt><dd>nudge box (Shift: resize)</dd>
           <dt>Ctrl+Z</dt><dd>undo (Shift to redo)</dd>
           <dt>Ctrl+S</dt><dd>save now</dd>
