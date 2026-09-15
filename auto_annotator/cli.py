@@ -13,6 +13,22 @@ from .inference import BACKEND_HELP, load_detector
 from .store import Project
 
 
+def invocation() -> str:
+    """How this process was started, so printed hints can be pasted back in.
+
+    The ``auto-annotator`` console script lands in a Scripts/bin directory that
+    is often not on PATH (a plain ``pip install --user`` on Windows, or an
+    unactivated virtualenv), and then ``python -m auto_annotator`` is what
+    works — so tell people whichever one they are already using.
+    """
+    # Split on both separators rather than Path.name, which only understands
+    # the host platform's — argv[0] is whatever launched us.
+    name = (sys.argv[0] or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.startswith("auto-annotator") or name.startswith("auto_annotator.exe"):
+        return "auto-annotator"
+    return f"{Path(sys.executable).stem} -m auto_annotator"
+
+
 def _classes(value: Optional[str]) -> Optional[List[str]]:
     if not value:
         return None
@@ -37,7 +53,7 @@ def _detector_options(args: argparse.Namespace) -> dict:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="auto-annotator",
+        prog=invocation(),
         description="Auto-label images with a local model, then fix the labels in a GUI.",
     )
     parser.add_argument("--version", action="version", version=f"auto-annotator {__version__}")
@@ -154,7 +170,7 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     )
     for error in result["errors"]:
         print(f"  ! {error['path']}: {error['error']}", file=sys.stderr)
-    print(f"review them with:  auto-annotator serve {args.images}")
+    print(f"review them with:  {invocation()} serve {args.images}")
     return 1 if result["errors"] else 0
 
 
@@ -192,7 +208,7 @@ def cmd_backends(_args: argparse.Namespace) -> int:
     devices = _openvino_devices()
     if devices:
         print(f"\nopenvino devices on this machine: {', '.join(devices)}")
-    print("\nuse them as:  auto-annotator serve ./images --model onnx:yolov8n.onnx")
+    print(f"\nuse them as:  {invocation()} serve ./images --model onnx:yolov8n.onnx")
     return 0
 
 

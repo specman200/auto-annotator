@@ -14,10 +14,42 @@ pip install -e ".[onnx]"    # + onnxruntime, for YOLO .onnx models
 pip install -e ".[dev]"     # + pytest, for the test suite
 ```
 
+Every `auto-annotator ...` command below also works as
+`python -m auto_annotator ...`, which needs nothing on your PATH.
+
+### "auto-annotator is not recognised"
+
+PowerShell, cmd or a shell saying the command is not found means `pip` put the
+launcher in a `Scripts`/`bin` directory that is not on your PATH — a common
+result of `pip install --user`, or of installing into a virtualenv that is not
+activated. The module form always works:
+
+```powershell
+py -m pip install -e .          # from the repo root; installs the package
+py -m auto_annotator demo       # ...and this needs no PATH entry at all
+```
+
+If you would rather have the short command, use a virtualenv and activate it,
+which puts `auto-annotator` on PATH for that shell:
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1      # cmd: .venv\Scripts\activate.bat
+pip install -e .
+auto-annotator demo
+```
+
+On Windows the tool is otherwise unremarkable: the GUI is a browser page, and
+the one place that needs care is the YOLO export, which symlinks images by
+default and falls back to copying automatically when Windows refuses (symlinks
+need Developer Mode or an elevated shell). Pass `--image-mode copy` to skip the
+attempt.
+
 ## Try it in 30 seconds
 
 ```bash
 auto-annotator demo         # makes sample images and opens the GUI on :8000
+python -m auto_annotator demo   # same thing, no PATH needed
 ```
 
 That runs the `mock` backend, which invents deterministic boxes — enough to see

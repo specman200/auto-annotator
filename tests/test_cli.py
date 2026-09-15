@@ -1,4 +1,5 @@
 import json
+import sys
 
 import pytest
 
@@ -51,3 +52,24 @@ def test_missing_folder_is_a_clean_error(tmp_path, capsys):
 def test_export_rejects_an_unknown_format(image_dir):
     with pytest.raises(SystemExit):
         main(["export", str(image_dir), "-f", "parquet"])
+
+
+def test_invocation_matches_how_the_process_was_started(monkeypatch):
+    """Printed hints must be pasteable in the shell the user is actually in."""
+    from auto_annotator.cli import invocation
+
+    monkeypatch.setattr(sys, "argv", ["C:\\py\\Scripts\\auto-annotator.exe", "serve"])
+    assert invocation() == "auto-annotator"
+
+    monkeypatch.setattr(sys, "argv", ["/usr/local/bin/auto-annotator", "serve"])
+    assert invocation() == "auto-annotator"
+
+    # `python -m auto_annotator` puts __main__.py in argv[0].
+    monkeypatch.setattr(sys, "argv", ["/app/auto_annotator/__main__.py", "serve"])
+    assert invocation().endswith("-m auto_annotator")
+
+
+def test_hints_point_at_the_module_form_when_run_as_a_module(image_dir, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["/app/auto_annotator/__main__.py", "annotate"])
+    main(["annotate", str(image_dir), "--model", "mock"])
+    assert "-m auto_annotator serve" in capsys.readouterr().out
