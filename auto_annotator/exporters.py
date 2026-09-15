@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -85,19 +87,81 @@ def export_coco(
     return out_path
 
 
+def _unique_stem(relpath: str, taken: set) -> str:
+    """Flatten ``nested/c.png`` to a unique ``nested__c``.
+
+    The YOLO layout is flat, so nested images have to be renamed; the set
+    guards against two different paths collapsing onto the same name.
+    """
+    stem = relpath.replace("/", "__").replace("\\", "__").rsplit(".", 1)[0]
+    candidate, suffix = stem, 1
+    while candidate in taken:
+        candidate = f"{stem}_{suffix}"
+        suffix += 1
+    taken.add(candidate)
+    return candidate
+
+
+def _place_image(source: Path, target: Path, mode: str) -> None:
+    """Put the image where the trainer expects it, by link or by copy."""
+    if mode == "none" or target.exists():
+        return
+    if mode == "link":
+        try:
+            target.symlink_to(source)
+            return
+        except (OSError, NotImplementedError):
+            pass  # Windows without developer mode, or a filesystem that refuses
+    shutil.copy2(source, target)
+
+
 def export_yolo(
-    project: Project, out_dir: Path, only_annotated: bool = True
+    project: Project,
+    out_dir: Path,
+    only_annotated: bool = True,
+    images: str = "link",
+    val_split: float = 0.0,
 ) -> Path:
-    """Darknet/YOLO layout: one ``.txt`` per image plus ``classes.txt``/``data.yaml``."""
+    """Ultralytics-ready YOLO dataset (the format YOLOv5/v8/v11 all read).
+
+    Writes the layout the trainer actually resolves — it pairs an image with
+    its label by swapping ``/images/`` for ``/labels/`` in the path, so the
+    two trees have to mirror each other::
+
+        out_dir/
+            images/train/cat.jpg     (symlinked by default, copied with images="copy")
+            labels/train/cat.txt     (class_id cx cy w h, normalized)
+            images/val/…, labels/val/…
+            data.yaml
+            classes.txt
+
+    ``val_split`` holds back that fraction of images for validation, chosen
+    deterministically so re-exporting keeps the same split.
+    """
+    if images not in ("link", "copy", "none"):
+        raise ValueError(f"unknown image mode {images!r}; use link, copy or none")
+    if not 0.0 <= val_split < 1.0:
+        raise ValueError("val_split must be in [0, 1)")
+
     records = _records(project, only_annotated)
     classes = _class_list(project, records)
     class_ids = {name: index for index, name in enumerate(classes)}
 
     out_dir = Path(out_dir)
-    labels_dir = out_dir / "labels"
-    labels_dir.mkdir(parents=True, exist_ok=True)
+    for split in ("train", "val"):
+        (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
+        (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
+    taken: set = set()
+    counts = {"train": 0, "val": 0}
     for record in records:
+        split = "val" if _in_val(record.path, val_split) else "train"
+        counts[split] += 1
+        stem = _unique_stem(record.path, taken)
+        source = project.abs_path(record.path)
+
+        _place_image(source, out_dir / "images" / split / (stem + source.suffix), images)
+
         lines = []
         for annotation in record.annotations:
             box = annotation.box
@@ -107,16 +171,33 @@ def export_yolo(
                 f"{class_ids[annotation.label]} "
                 f"{cx:.6f} {cy:.6f} {box.width:.6f} {box.height:.6f}"
             )
-        target = labels_dir / (record.path.replace("/", "__").rsplit(".", 1)[0] + ".txt")
-        target.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
+        (out_dir / "labels" / split / f"{stem}.txt").write_text(
+            "\n".join(lines) + ("\n" if lines else ""), encoding="utf-8"
+        )
 
     (out_dir / "classes.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
+
     names = "\n".join(f"  {i}: {name}" for i, name in enumerate(classes))
+    val_path = "images/val" if counts["val"] else "images/train"
+    note = (
+        "" if counts["val"]
+        else "# val mirrors train: re-export with val_split to hold images out\n"
+    )
     (out_dir / "data.yaml").write_text(
-        f"path: {project.image_root}\ntrain: .\nval: .\nnames:\n{names}\n",
+        f"# written by auto-annotator\n{note}"
+        f"path: {out_dir.resolve()}\ntrain: images/train\nval: {val_path}\n"
+        f"names:\n{names}\n",
         encoding="utf-8",
     )
     return out_dir
+
+
+def _in_val(relpath: str, val_split: float) -> bool:
+    """Deterministic split, so a re-export never reshuffles train and val."""
+    if val_split <= 0:
+        return False
+    digest = hashlib.sha256(relpath.encode("utf-8")).digest()
+    return (int.from_bytes(digest[:4], "big") % 10_000) < val_split * 10_000
 
 
 def export_voc(
@@ -192,8 +273,13 @@ def export(
     fmt: str,
     out: Optional[Path] = None,
     only_annotated: bool = True,
+    **options: Any,
 ) -> Path:
-    """Export in ``fmt``, choosing a sensible default destination when ``out`` is None."""
+    """Export in ``fmt``, choosing a sensible default destination when ``out`` is None.
+
+    Extra keyword arguments go to the format's own exporter (``images`` and
+    ``val_split`` for yolo); ones it does not take are ignored.
+    """
     fmt = fmt.lower()
     if fmt not in FORMATS:
         raise ValueError(f"unknown export format {fmt!r}; use one of {', '.join(FORMATS)}")
@@ -203,5 +289,8 @@ def export(
     if fmt == "csv":
         return export_csv(project, out or default_root / "annotations.csv", only_annotated)
     if fmt == "yolo":
-        return export_yolo(project, out or default_root / "yolo", only_annotated)
+        yolo_options = {k: v for k, v in options.items() if k in ("images", "val_split")}
+        return export_yolo(
+            project, out or default_root / "yolo", only_annotated, **yolo_options
+        )
     return export_voc(project, out or default_root / "voc", only_annotated)

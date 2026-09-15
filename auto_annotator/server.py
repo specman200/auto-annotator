@@ -189,6 +189,8 @@ def create_app(
                 fmt,
                 Path(out) if out else None,
                 only_annotated=bool(payload.get("only_annotated", True)),
+                images=payload.get("images", "link"),
+                val_split=float(payload.get("val_split", 0.0)),
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))

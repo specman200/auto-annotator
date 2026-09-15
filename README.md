@@ -112,12 +112,38 @@ at most one image's work.
 
 ```bash
 auto-annotator export ./images -f coco          # .auto-annotator/exports/annotations.coco.json
-auto-annotator export ./images -f yolo -o ./ds  # labels/*.txt + classes.txt + data.yaml
+auto-annotator export ./images -f yolo -o ./ds  # a dataset you can train on directly
 auto-annotator export ./images -f csv --include-empty
 ```
 
 Exports carry the score and whether each box came from the model or a human, so
 you can audit or filter later.
+
+### YOLO export
+
+The `yolo` export is the format YOLOv5, v8 and v11 all read — `class_id cx cy w h`,
+normalized — in the directory layout the trainer resolves, where labels mirror
+images path-for-path:
+
+```
+ds/
+  images/train/cat.jpg     labels/train/cat.txt
+  images/val/dog.jpg       labels/val/dog.txt
+  data.yaml                classes.txt
+```
+
+```bash
+auto-annotator export ./images -f yolo -o ./ds --val-split 0.2
+yolo detect train data=./ds/data.yaml model=yolo11n.pt
+```
+
+Images are symlinked into the dataset so nothing is duplicated; pass
+`--image-mode copy` if the dataset has to be moved or zipped, or
+`--image-mode none` for labels only. `--val-split` holds back a deterministic
+fraction, so re-exporting after more labelling never reshuffles your split.
+Nested images are flattened (`nested/c.png` → `nested__c.png`) to fit YOLO's
+flat layout, and `data.yaml` points at the export directory, not your source
+folder.
 
 ## Commands
 
@@ -125,6 +151,7 @@ you can audit or filter later.
 auto-annotator serve    <images> [--model SPEC] [--conf F] [--classes ...] [--labels ...] [--port N] [--open]
 auto-annotator annotate <images> [--model SPEC] [--conf F] [--merge MODE] [--all] [--only-new]
 auto-annotator export   <images> [-f coco|yolo|voc|csv] [-o PATH] [--include-empty]
+                                 [--val-split F] [--image-mode link|copy|none]
 auto-annotator stats    <images>
 auto-annotator backends
 auto-annotator demo     [--dir D] [--count N]

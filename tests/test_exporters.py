@@ -1,5 +1,7 @@
 import csv
 import json
+import os
+from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
@@ -34,12 +36,84 @@ def test_coco_can_include_empty_images(labelled, tmp_path):
 
 def test_yolo_writes_normalized_centre_boxes_and_class_files(labelled, tmp_path):
     out = exporters.export_yolo(labelled, tmp_path / "yolo")
-    lines = (out / "labels" / "a.txt").read_text().strip().splitlines()
+    lines = (out / "labels" / "train" / "a.txt").read_text().strip().splitlines()
     class_id, cx, cy, w, h = lines[0].split()
     assert class_id == str(labelled.classes.index("cat"))
     assert (float(cx), float(cy), float(w), float(h)) == pytest.approx((0.35, 0.45, 0.5, 0.5))
     assert "cat" in (out / "classes.txt").read_text()
     assert "names:" in (out / "data.yaml").read_text()
+
+
+def img2label_paths(image_paths):
+    """How ultralytics (v5/v8/v11) finds a label file for an image."""
+    sa, sb = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"
+    return [sb.join(p.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt" for p in image_paths]
+
+
+def test_yolo_layout_is_what_the_trainer_resolves(labelled, tmp_path):
+    """Every exported image must pair with a label under the trainer's own rule."""
+    out = exporters.export_yolo(labelled, tmp_path / "yolo")
+    images = sorted(str(p) for p in (out / "images" / "train").iterdir())
+    assert images, "no images were placed in the dataset"
+    for label_path in img2label_paths(images):
+        assert Path(label_path).exists(), f"no label for {label_path}"
+
+
+def test_yolo_data_yaml_points_at_the_export_not_the_source(labelled, tmp_path):
+    out = exporters.export_yolo(labelled, tmp_path / "yolo")
+    config = dict(
+        line.split(": ", 1)
+        for line in (out / "data.yaml").read_text().splitlines()
+        if ": " in line and not line.startswith((" ", "#"))
+    )
+    assert config["path"] == str(out.resolve())
+    assert config["train"] == "images/train"
+    # With no split asked for, val has to point somewhere that exists.
+    assert (out / config["val"]).is_dir()
+
+
+def test_yolo_links_images_by_default_and_can_copy_or_skip(labelled, tmp_path):
+    linked = exporters.export_yolo(labelled, tmp_path / "linked")
+    assert (linked / "images" / "train" / "a.jpg").is_symlink()
+
+    copied = exporters.export_yolo(labelled, tmp_path / "copied", images="copy")
+    image = copied / "images" / "train" / "a.jpg"
+    assert image.is_file() and not image.is_symlink()
+
+    bare = exporters.export_yolo(labelled, tmp_path / "bare", images="none")
+    assert list((bare / "images" / "train").iterdir()) == []
+    assert (bare / "labels" / "train" / "a.txt").exists()
+
+
+def test_yolo_val_split_is_deterministic(project, tmp_path):
+    for path in project.paths():
+        project.set_annotations(path, [Annotation("cat", Box(0, 0, 0.5, 0.5))])
+
+    def split_of(out):
+        return {
+            "train": sorted(p.name for p in (out / "labels" / "train").iterdir()),
+            "val": sorted(p.name for p in (out / "labels" / "val").iterdir()),
+        }
+
+    first = split_of(exporters.export_yolo(project, tmp_path / "one", val_split=0.5))
+    second = split_of(exporters.export_yolo(project, tmp_path / "two", val_split=0.5))
+    assert first == second
+    assert first["val"], "a 50% split should hold something back"
+    assert len(first["train"]) + len(first["val"]) == 3
+
+
+def test_yolo_flattens_nested_paths_without_collisions(project, tmp_path):
+    project.set_annotations("nested/c.png", [Annotation("cat", Box(0, 0, 1, 1))])
+    out = exporters.export_yolo(project, tmp_path / "yolo")
+    assert (out / "labels" / "train" / "nested__c.txt").exists()
+    assert (out / "images" / "train" / "nested__c.png").exists()
+
+
+def test_yolo_rejects_nonsense_options(labelled, tmp_path):
+    with pytest.raises(ValueError):
+        exporters.export_yolo(labelled, tmp_path / "x", images="teleport")
+    with pytest.raises(ValueError):
+        exporters.export_yolo(labelled, tmp_path / "y", val_split=1.5)
 
 
 def test_voc_writes_one_xml_per_image(labelled, tmp_path):

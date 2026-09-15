@@ -69,6 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("-o", "--out", type=Path, help="output file or directory")
     export.add_argument("--include-empty", action="store_true",
                         help="also export images that have no boxes")
+    export.add_argument("--val-split", type=float, default=0.0, metavar="F",
+                        help="yolo: hold back this fraction of images for validation")
+    export.add_argument("--image-mode", choices=("link", "copy", "none"), default="link",
+                        help="yolo: symlink (default), copy, or omit the image files")
 
     stats = subparsers.add_parser("stats", help="summarize a project")
     stats.add_argument("images", type=Path)
@@ -142,7 +146,8 @@ def cmd_annotate(args: argparse.Namespace) -> int:
 def cmd_export(args: argparse.Namespace) -> int:
     project = Project(args.images)
     path = exporters.export(
-        project, args.format, args.out, only_annotated=not args.include_empty
+        project, args.format, args.out, only_annotated=not args.include_empty,
+        images=args.image_mode, val_split=args.val_split,
     )
     print(f"wrote {args.format} export to {path}")
     return 0
