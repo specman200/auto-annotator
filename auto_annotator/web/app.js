@@ -389,17 +389,45 @@ function handleAt(point) {
   return null;
 }
 
-function annotationAt(point) {
+function annotationsAt(point) {
   const annotations = state.record ? state.record.annotations : [];
-  let best = null, bestArea = Infinity;
-  for (const annotation of annotations) {
-    const px = boxPixels(annotation.box);
-    if (point.x >= px.x1 && point.x <= px.x2 && point.y >= px.y1 && point.y <= px.y2) {
-      const area = (px.x2 - px.x1) * (px.y2 - px.y1);
-      if (area < bestArea) { best = annotation; bestArea = area; }  // innermost wins
-    }
+  return annotations
+    .filter((annotation) => {
+      const px = boxPixels(annotation.box);
+      return point.x >= px.x1 && point.x <= px.x2 &&
+             point.y >= px.y1 && point.y <= px.y2;
+    })
+    .sort((a, b) => boxArea(a) - boxArea(b));   // innermost (smallest) first
+}
+
+function boxArea(annotation) {
+  const box = annotation.box;
+  return (box.x2 - box.x1) * (box.y2 - box.y1);
+}
+
+function annotationAt(point) {
+  return annotationsAt(point)[0] || null;   // innermost wins
+}
+
+/* Clicking the same spot again steps to the next box under the cursor, so a
+   box completely covered by another is still reachable on the canvas. */
+function pickAnnotation(point) {
+  const candidates = annotationsAt(point);
+  if (!candidates.length) { state.lastPick = null; return null; }
+
+  const tolerance = 4 / state.view.scale;
+  const repeated = state.lastPick &&
+    Math.abs(point.x - state.lastPick.x) < tolerance &&
+    Math.abs(point.y - state.lastPick.y) < tolerance;
+  state.lastPick = { x: point.x, y: point.y };
+
+  if (!repeated) return candidates[0];
+  const current = candidates.findIndex((a) => a.id === state.selectedId);
+  const next = candidates[(current + 1) % candidates.length];
+  if (candidates.length > 1 && current >= 0) {
+    toast(`box ${((current + 1) % candidates.length) + 1} of ${candidates.length} here`);
   }
-  return best;
+  return next;
 }
 
 function selectedAnnotation() {
@@ -430,7 +458,7 @@ canvas.addEventListener('pointerdown', (event) => {
     return;
   }
 
-  const hit = annotationAt(point);
+  const hit = pickAnnotation(point);
   if (hit) {
     pushUndo();
     state.drag = { mode: 'move', annotation: hit, start: point,
@@ -792,6 +820,10 @@ async function markReviewed() {
    unavailable the layout just starts at its defaults. */
 
 const LAYOUT_KEY = 'auto-annotator.layout';
+const MIN_CANVAS = 320;    // the image always keeps at least this much width
+const MIN_SIDEBAR = 160;
+const MIN_PANEL_BODY = 90; // a panel below a resized one stays usable
+const HEAD_HEIGHT = 34;
 
 function loadLayout() {
   try {
@@ -809,20 +841,105 @@ function saveLayout(patch) {
   }
 }
 
+/* Clamp a sidebar width so the two sidebars can never crowd out the image. */
+function clampWidth(width, otherWidth) {
+  const room = window.innerWidth - otherWidth - MIN_CANVAS;
+  return Math.round(Math.min(Math.max(width, MIN_SIDEBAR), Math.max(MIN_SIDEBAR, room)));
+}
+
+function clampPanelHeight(panel, height) {
+  const sidebar = $('sidebar-right').clientHeight;
+  return Math.round(Math.min(Math.max(height, HEAD_HEIGHT), sidebar));
+}
+
+/* Keep the right-hand panels within the sidebar.
+
+   Clamping each panel on its own is not enough: what a resized panel may take
+   depends on how tall the *content* of the others is, not on some minimum, so
+   the sized panels are shrunk together until everything fits. Without this a
+   stored height pushes the last panel off the bottom of the screen.
+*/
+function fitPanels() {
+  const sidebar = $('sidebar-right');
+  const panels = [...sidebar.querySelectorAll('.panel')];
+  if (!panels.length || !sidebar.clientHeight) return;
+
+  const splitters = sidebar.querySelectorAll('.splitter.horizontal').length * 5;
+  const sized = panels.filter((panel) => (
+    panel.style.flexBasis &&
+    !panel.classList.contains('collapsed') &&
+    !panel.classList.contains('grow')
+  ));
+
+  const untouched = panels
+    .filter((panel) => !sized.includes(panel))
+    .reduce((total, panel) => {
+      if (panel.classList.contains('collapsed')) return total + HEAD_HEIGHT;
+      if (panel.classList.contains('grow')) return total + HEAD_HEIGHT + MIN_PANEL_BODY;
+      return total + panel.scrollHeight;   // its natural content height
+    }, 0);
+
+  const budget = sidebar.clientHeight - splitters - untouched;
+  const requested = sized.reduce((total, panel) => total + parseFloat(panel.style.flexBasis), 0);
+  if (requested <= budget) return;
+
+  const factor = Math.max(0, budget) / requested;
+  for (const panel of sized) {
+    const shrunk = Math.max(HEAD_HEIGHT, parseFloat(panel.style.flexBasis) * factor);
+    panel.style.flexBasis = `${Math.round(shrunk)}px`;
+  }
+}
+
 function applyLayout() {
   const layout = loadLayout();
   const root = document.documentElement;
-  if (layout.leftWidth) root.style.setProperty('--left-width', `${layout.leftWidth}px`);
-  if (layout.rightWidth) root.style.setProperty('--right-width', `${layout.rightWidth}px`);
-  for (const [id, height] of Object.entries(layout.panels || {})) {
-    const panel = document.getElementById(id);
-    if (panel && !panel.classList.contains('grow')) {
-      panel.style.flexBasis = `${height}px`;
-    }
-  }
+  const left = layout.leftWidth || $('sidebar-left').getBoundingClientRect().width;
+  const right = layout.rightWidth || $('sidebar-right').getBoundingClientRect().width;
+  root.style.setProperty('--left-width', `${clampWidth(left, right)}px`);
+  root.style.setProperty('--right-width', `${clampWidth(right, left)}px`);
+
   for (const id of layout.collapsed || []) {
     document.getElementById(id)?.classList.add('collapsed');
   }
+  for (const [id, height] of Object.entries(layout.panels || {})) {
+    const panel = document.getElementById(id);
+    if (panel && !panel.classList.contains('grow')) {
+      panel.style.flexBasis = `${clampPanelHeight(panel, height)}px`;
+    }
+  }
+  fitPanels();
+}
+
+/* A window that shrinks (or a layout stored on a bigger screen) must not leave
+   the image or a panel squeezed to nothing. */
+function reclampLayout() {
+  const root = document.documentElement;
+  const left = $('sidebar-left').getBoundingClientRect().width;
+  const right = $('sidebar-right').getBoundingClientRect().width;
+  root.style.setProperty('--left-width', `${clampWidth(left, right)}px`);
+  root.style.setProperty('--right-width', `${clampWidth(right, left)}px`);
+  for (const panel of document.querySelectorAll('.sidebar.right .panel')) {
+    if (panel.style.flexBasis && !panel.classList.contains('collapsed')) {
+      const current = parseFloat(panel.style.flexBasis);
+      panel.style.flexBasis = `${clampPanelHeight(panel, current)}px`;
+    }
+  }
+  fitPanels();
+}
+
+function resetLayout() {
+  try {
+    localStorage.removeItem(LAYOUT_KEY);
+  } catch (_) { /* nothing stored to clear */ }
+  const root = document.documentElement;
+  root.style.removeProperty('--left-width');
+  root.style.removeProperty('--right-width');
+  for (const panel of document.querySelectorAll('.panel')) {
+    panel.style.flexBasis = '';
+    panel.classList.remove('collapsed');
+  }
+  resizeCanvas();
+  toast('layout reset');
 }
 
 function setUpSidebarResize(splitter, sidebarId, key, fromRight) {
@@ -836,7 +953,9 @@ function setUpSidebarResize(splitter, sidebarId, key, fromRight) {
 
     const move = (moveEvent) => {
       const delta = fromRight ? startX - moveEvent.clientX : moveEvent.clientX - startX;
-      const width = Math.round(Math.max(150, Math.min(640, startWidth + delta)));
+      const otherWidth = (fromRight ? $('sidebar-left') : $('sidebar-right'))
+        .getBoundingClientRect().width;
+      const width = clampWidth(startWidth + delta, otherWidth);
       document.documentElement.style.setProperty(
         fromRight ? '--right-width' : '--left-width', `${width}px`
       );
@@ -869,8 +988,8 @@ function setUpPanelResize(splitter) {
 
     const move = (moveEvent) => {
       const delta = fromBottom ? startY - moveEvent.clientY : moveEvent.clientY - startY;
-      const height = Math.round(Math.max(38, Math.min(700, startHeight + delta)));
-      panel.style.flexBasis = `${height}px`;
+      panel.style.flexBasis = `${clampPanelHeight(panel, startHeight + delta)}px`;
+      fitPanels();
     };
     const up = () => {
       splitter.classList.remove('dragging');
@@ -890,12 +1009,14 @@ function togglePanel(panel) {
   if (panel.classList.contains('collapsed')) {
     panel.style.flexBasis = '';
   }
+  fitPanels();
   const collapsed = [...document.querySelectorAll('.panel.collapsed')].map((p) => p.id);
   saveLayout({ collapsed });
 }
 
 function setUpLayout() {
   applyLayout();
+  $('btn-reset-layout').onclick = resetLayout;
   setUpSidebarResize($('split-left'), 'sidebar-left', 'leftWidth', false);
   setUpSidebarResize($('split-right'), 'sidebar-right', 'rightWidth', true);
   for (const splitter of document.querySelectorAll('.splitter.horizontal')) {
@@ -1020,7 +1141,7 @@ window.addEventListener('beforeunload', (event) => {
   if (state.dirty) { save(); event.preventDefault(); event.returnValue = ''; }
 });
 
-window.addEventListener('resize', resizeCanvas);
+window.addEventListener('resize', () => { reclampLayout(); resizeCanvas(); });
 
 setUpLayout();
 resizeCanvas();

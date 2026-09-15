@@ -158,12 +158,25 @@ the cursor is highlighted, on the canvas and in the list.
 Everything saves itself half a second after you stop editing — `Ctrl+S` forces it,
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, scroll zooms, space-drag pans, `F` fits.
 
+### Overlapping boxes
+
+Clicking picks the smallest box under the cursor. Click the same spot again to
+step to the next one in the stack, so a box completely covered by a bigger one is
+still reachable — the toast tells you where you are in the pile. Selecting the
+row in the Boxes list and using the arrow keys works whatever the boxes are doing.
+
 ### Rearranging the panels
 
 Drag the bar between any two panes to resize them — the sidebars, and the
 Classes/Boxes/Shortcuts panels within the right one. Click a panel's heading to
 collapse it; collapsing Shortcuts once you know them gives the box list the whole
-sidebar. Sizes and collapsed panels are remembered in your browser.
+sidebar. Sizes and collapsed panels are remembered in your browser, clamped so
+they can never squeeze the image or push a panel off-screen, and **Reset layout**
+in the bottom bar puts everything back.
+
+If the layout ever looks scrambled after an update, it is a stale stylesheet in
+the browser cache: the GUI is now served with revalidation forced, so one reload
+fixes it (Ctrl+Shift+R if you are still on an old build).
 
 ## Where annotations live
 

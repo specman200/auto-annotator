@@ -76,6 +76,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   min-height: 0;
 }
 .sidebar { background: var(--panel); display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.sidebar.right { overflow-y: auto; }
 
 /* Drag handles between the panes. */
 .splitter { background: var(--line); }

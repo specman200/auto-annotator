@@ -251,3 +251,103 @@ def test_the_gui_runs_without_javascript_errors(gui):
     page.keyboard.press("n")
     page.wait_for_timeout(500)
     assert errors == []
+
+
+def test_a_stored_layout_can_never_squeeze_the_image_away(gui):
+    """A few enthusiastic drags used to persist a layout that wrecked the UI."""
+    page, _ = gui
+    page.evaluate(
+        """() => localStorage.setItem('auto-annotator.layout', JSON.stringify({
+            leftWidth: 620, rightWidth: 620,
+            panels: {'panel-classes': 690}, collapsed: []}))"""
+    )
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(600)
+
+    geometry = page.evaluate(
+        """() => {
+            const rect = (sel) => {
+                const box = document.querySelector(sel).getBoundingClientRect();
+                return {width: box.width, height: box.height, bottom: box.bottom};
+            };
+            return {canvas: rect('#canvas'), boxes: rect('#panel-boxes'),
+                    shortcuts: rect('#panel-shortcuts'), height: window.innerHeight};
+        }"""
+    )
+    assert geometry["canvas"]["width"] >= 300, "the image keeps a usable share"
+    assert geometry["boxes"]["height"] >= 110, "the box list stays usable"
+    assert geometry["shortcuts"]["bottom"] <= geometry["height"] + 1, "nothing off-screen"
+
+
+def test_shrinking_the_window_reflows_instead_of_crushing_the_canvas(gui):
+    page, _ = gui
+    page.set_viewport_size({"width": 820, "height": 620})
+    page.wait_for_timeout(500)
+    width = page.evaluate("document.getElementById('canvas').getBoundingClientRect().width")
+    assert width >= 200
+    page.set_viewport_size({"width": 1280, "height": 800})
+    page.wait_for_timeout(400)
+
+
+def test_reset_layout_recovers_a_wedged_sidebar(gui):
+    page, _ = gui
+    page.evaluate(
+        """() => localStorage.setItem('auto-annotator.layout', JSON.stringify({
+            leftWidth: 600, rightWidth: 600,
+            panels: {'panel-classes': 600}, collapsed: ['panel-boxes']}))"""
+    )
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(500)
+    page.click("#btn-reset-layout")
+    page.wait_for_timeout(400)
+
+    assert page.evaluate("document.querySelectorAll('.panel.collapsed').length") == 0
+    assert page.evaluate("document.getElementById('canvas').getBoundingClientRect().width") > 500
+    assert page.evaluate("localStorage.getItem('auto-annotator.layout')") in (None, "null")
+
+
+def test_a_box_hidden_under_another_can_still_be_selected(gui):
+    """Clicking the same spot cycles the stack, innermost first."""
+    page, _ = gui
+    page.evaluate(
+        """async () => {
+            const annotations = [
+              {label: 'cat', box: {x1: .1, y1: .1, x2: .9, y2: .9}, score: .9, source: 'model'},
+              {label: 'dog', box: {x1: .3, y1: .3, x2: .6, y2: .6}, score: .8, source: 'model'},
+              {label: 'cat', box: {x1: .4, y1: .4, x2: .5, y2: .5}, score: .7, source: 'model'}];
+            await fetch('/api/images/img_0.png/annotations', {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({annotations, status: 'predicted'})});
+        }"""
+    )
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(600)
+
+    spot = page.evaluate(
+        """() => { const r = canvas.getBoundingClientRect();
+            const p = imageToScreen(0.45 * img.naturalWidth, 0.45 * img.naturalHeight);
+            return {x: r.left + p.x, y: r.top + p.y}; }"""
+    )
+    seen = []
+    for _ in range(3):
+        page.mouse.click(spot["x"], spot["y"])
+        page.wait_for_timeout(250)
+        seen.append(page.evaluate("state.selectedId"))
+    assert len(set(seen)) == 3, "each click should reach a different box in the stack"
+
+
+def test_the_gui_is_served_with_revalidation(gui):
+    """Mismatched cached HTML/CSS renders a broken layout that looks like a bug."""
+    page, _ = gui
+    headers = {}
+    page.on(
+        "response",
+        lambda response: headers.__setitem__(
+            response.url.rsplit("/", 1)[-1] or "index",
+            response.headers.get("cache-control", ""),
+        ),
+    )
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(300)
+    for name in ("app.js", "style.css"):
+        assert "no-cache" in headers.get(name, ""), f"{name}: {headers.get(name)!r}"

@@ -22,6 +22,21 @@ from .store import Project
 WEB_DIR = Path(__file__).parent / "web"
 
 
+class NoCacheStatic(StaticFiles):
+    """Serve the GUI with revalidation forced on every load.
+
+    The page, its stylesheet and its script are one unit: a browser holding a
+    cached copy of one and a fresh copy of another renders a broken layout that
+    looks like a bug in the tool. ETags still make the revalidation a cheap 304,
+    and this is localhost either way.
+    """
+
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 class AppState:
     """Everything the request handlers share."""
 
@@ -218,6 +233,6 @@ def create_app(
         return JSONResponse(status_code=400, content={"detail": str(exc)})
 
     if WEB_DIR.is_dir():
-        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+        app.mount("/", NoCacheStatic(directory=WEB_DIR, html=True), name="web")
 
     return app
