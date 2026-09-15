@@ -10,6 +10,7 @@ from .mock import MockDetector
 BACKENDS: Dict[str, str] = {
     "mock": "auto_annotator.inference.mock:MockDetector",
     "onnx": "auto_annotator.inference.onnx_yolo:OnnxYoloDetector",
+    "openvino": "auto_annotator.inference.openvino_backend:OpenVinoDetector",
     "ultralytics": "auto_annotator.inference.ultralytics_backend:UltralyticsDetector",
     "torchvision": "auto_annotator.inference.torchvision_backend:TorchvisionDetector",
 }
@@ -17,6 +18,8 @@ BACKENDS: Dict[str, str] = {
 BACKEND_HELP = {
     "mock": "deterministic fake boxes; no weights needed (good for trying the GUI)",
     "onnx": "YOLOv5/v8/v11 ONNX export via onnxruntime, e.g. onnx:yolov8n.onnx",
+    "openvino": "YOLO via the OpenVINO runtime (CPU/GPU/NPU), "
+                "e.g. openvino:yolo11n_openvino_model",
     "ultralytics": "ultralytics YOLO weights, e.g. ultralytics:yolov8n.pt",
     "torchvision": "torchvision COCO detector, e.g. torchvision:fasterrcnn_resnet50_fpn",
 }
@@ -43,6 +46,9 @@ def parse_spec(spec: str):
         return "onnx", spec
     if lowered.endswith((".pt", ".pth")):
         return "ultralytics", spec
+    # An OpenVINO IR, or the export directory ultralytics writes around it.
+    if lowered.endswith(".xml") or lowered.endswith("_openvino_model"):
+        return "openvino", spec
     raise ValueError(
         f"unknown model spec {spec!r}. Use one of: "
         + ", ".join(f"{k} ({v})" for k, v in BACKEND_HELP.items())

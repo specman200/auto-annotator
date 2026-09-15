@@ -16,5 +16,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install -e ".[dev,onnx]" onnx
+      - run: pip install -e ".[dev,onnx,openvino]" onnx
       - run: pytest -q

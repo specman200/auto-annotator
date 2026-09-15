@@ -45,12 +45,14 @@ start reviewing.
 | Backend | Install | Use |
 | --- | --- | --- |
 | `onnx` | `pip install onnxruntime` | `--model onnx:yolov8n.onnx` |
+| `openvino` | `pip install openvino` | `--model openvino:yolo11n_openvino_model` |
 | `ultralytics` | `pip install ultralytics` | `--model ultralytics:yolov8n.pt` |
 | `torchvision` | `pip install torch torchvision` | `--model torchvision:fasterrcnn_resnet50_fpn` |
 | `mock` | — | `--model mock` |
 
-`auto-annotator backends` prints the same list. A YOLO `.onnx` file comes from
-ultralytics:
+`auto-annotator backends` prints the same list, marks which ones are installed,
+and names the OpenVINO devices this machine actually has. A YOLO `.onnx` file
+comes from ultralytics:
 
 ```bash
 yolo export model=yolov8n.pt format=onnx     # writes yolov8n.onnx
@@ -66,6 +68,35 @@ auto-annotator serve ./images --model onnx:parts.onnx --labels bolt,nut,washer
 
 If the name count does not match what the model predicts, boxes come back as
 `class_0`, `class_1`, … rather than quietly wearing the wrong names.
+
+### OpenVINO
+
+For Intel CPUs, integrated GPUs and NPUs, the `openvino` backend is usually the
+fastest option on the same hardware:
+
+```bash
+pip install openvino
+yolo export model=yolo11n.pt format=openvino      # writes yolo11n_openvino_model/
+
+auto-annotator serve ./images --model openvino:yolo11n_openvino_model
+auto-annotator serve ./images --model openvino:yolo11n_openvino_model --device GPU
+```
+
+Point it at the export directory, the `.xml` inside it, or an ONNX file —
+OpenVINO reads all three, so no conversion step is needed for a model you
+already have as ONNX. Class names are picked up from the export's
+`metadata.yaml` (or the IR's runtime info) when it has them, so `--labels` is
+only needed for models that carry none.
+
+`--device` takes `CPU`, `GPU`, `NPU`, `AUTO` (the default, which picks for you)
+or any other OpenVINO device string; `auto-annotator backends` lists what is
+present. Paths ending in `.xml` or `_openvino_model` are recognised without the
+`openvino:` prefix.
+
+Note that `yolo export format=openvino` compresses weights to FP16 by default,
+which moves scores slightly versus the same model in ONNX — enough to matter if
+you are comparing runs at a fixed confidence threshold, not enough to change
+what gets detected.
 
 ## The GUI
 
@@ -148,8 +179,10 @@ folder.
 ## Commands
 
 ```
-auto-annotator serve    <images> [--model SPEC] [--conf F] [--classes ...] [--labels ...] [--port N] [--open]
+auto-annotator serve    <images> [--model SPEC] [--conf F] [--classes ...] [--labels ...]
+                                 [--device DEV] [--port N] [--open]
 auto-annotator annotate <images> [--model SPEC] [--conf F] [--merge MODE] [--all] [--only-new]
+                                 [--labels ...] [--device DEV]
 auto-annotator export   <images> [-f coco|yolo|voc|csv] [-o PATH] [--include-empty]
                                  [--val-split F] [--image-mode link|copy|none]
 auto-annotator stats    <images>
@@ -159,7 +192,10 @@ auto-annotator demo     [--dir D] [--count N]
 
 ## Adding a backend
 
-Subclass `Detector`, return normalized boxes, register the class:
+Subclass `Detector`, return normalized boxes, register the class. (For another
+YOLO runtime, subclass `YoloRuntime` from `inference.yolo_common` instead and
+implement just `load` and `_infer` — letterboxing, decoding both output layouts
+and NMS come for free, which is all the `openvino` backend is.)
 
 ```python
 # my_backend.py
@@ -212,6 +248,9 @@ The GUI is a client of a small JSON API on the same port, so scripts can drive i
 pytest
 ```
 
-The suite covers the store, merge policies, exporters and the HTTP API, and runs
-the ONNX backend through a real `onnxruntime` session built on the fly, so the
-letterboxing and coordinate maths are checked without downloading weights.
+The suite covers the store, merge policies, exporters and the HTTP API. The ONNX
+and OpenVINO backends are run for real — a synthetic YOLO graph is built,
+compiled and executed by each runtime — so the letterboxing and coordinate maths
+are checked without downloading weights, including a test that both runtimes
+return the same detections for the same model. Tests for a runtime you have not
+installed skip themselves.

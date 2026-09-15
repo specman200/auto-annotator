@@ -35,11 +35,21 @@ def build_model(path, detections, layout="v8"):
         objectness = np.ones((array.shape[0], 1), dtype=np.float32)
         payload = np.hstack([array[:, :4], objectness, array[:, 4:]])[None]
 
+    # The detections are constant, but they are added to a zeroed reduction of
+    # the input so the graph genuinely consumes it — a runtime that prunes dead
+    # inputs (OpenVINO does) would otherwise end up with no input at all.
     constant = helper.make_node(
-        "Constant", [], ["output0"], value=numpy_helper.from_array(payload, "det")
+        "Constant", [], ["det"], value=numpy_helper.from_array(payload, "det")
     )
+    zero = helper.make_node(
+        "Constant", [], ["zero"],
+        value=numpy_helper.from_array(np.zeros((), dtype=np.float32), "zero"),
+    )
+    reduced = helper.make_node("ReduceMean", ["images"], ["mean"], keepdims=0)
+    silenced = helper.make_node("Mul", ["mean", "zero"], ["silenced"])
+    add = helper.make_node("Add", ["det", "silenced"], ["output0"])
     graph = helper.make_graph(
-        [constant],
+        [constant, zero, reduced, silenced, add],
         "fake-yolo",
         [helper.make_tensor_value_info("images", TensorProto.FLOAT, [1, 3, IMGSZ, IMGSZ])],
         [helper.make_tensor_value_info("output0", TensorProto.FLOAT, list(payload.shape))],

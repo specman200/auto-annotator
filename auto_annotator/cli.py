@@ -25,6 +25,16 @@ def _classes(value: Optional[str]) -> Optional[List[str]]:
     return [name.strip() for name in value.split(",") if name.strip()]
 
 
+def _detector_options(args: argparse.Namespace) -> dict:
+    """Collect the backend options the user actually specified."""
+    options = {}
+    if getattr(args, "labels", None):
+        options["labels"] = _classes(args.labels)
+    if getattr(args, "device", None):
+        options["device"] = args.device
+    return options
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="auto-annotator",
@@ -46,6 +56,11 @@ def build_parser() -> argparse.ArgumentParser:
             "--labels",
             help="class names the MODEL outputs, in model order "
                  "(only needed for custom exports that carry no names)",
+        )
+        sub.add_argument(
+            "--device",
+            help="inference device for backends that offer a choice "
+                 "(openvino: CPU, GPU, NPU, AUTO; torchvision/ultralytics: cpu, cuda)",
         )
 
     serve = subparsers.add_parser("serve", help="open the annotation GUI in a browser")
@@ -106,7 +121,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
 
-    options = {"labels": _classes(args.labels)} if args.labels else {}
+    options = _detector_options(args)
     app = create_app(
         args.images, model_spec=args.model, conf=args.conf,
         classes=_classes(args.classes), **options,
@@ -118,7 +133,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_annotate(args: argparse.Namespace) -> int:
     project = Project(args.images, classes=_classes(args.classes))
     project.save_project_file()
-    options = {"labels": _classes(args.labels)} if args.labels else {}
+    options = _detector_options(args)
     annotator = Annotator(project, model_spec=args.model, conf=args.conf, **options)
     print(f"{len(project)} images in {project.image_root}")
 
@@ -171,9 +186,40 @@ def cmd_stats(args: argparse.Namespace) -> int:
 def cmd_backends(_args: argparse.Namespace) -> int:
     print("available backends:")
     for name, help_text in BACKEND_HELP.items():
-        print(f"  {name:<12} {help_text}")
+        installed = "" if _backend_installed(name) else "   (not installed)"
+        print(f"  {name:<12} {help_text}{installed}")
+
+    devices = _openvino_devices()
+    if devices:
+        print(f"\nopenvino devices on this machine: {', '.join(devices)}")
     print("\nuse them as:  auto-annotator serve ./images --model onnx:yolov8n.onnx")
     return 0
+
+
+def _backend_installed(name: str) -> bool:
+    import importlib.util
+
+    module = {
+        "onnx": "onnxruntime",
+        "openvino": "openvino",
+        "ultralytics": "ultralytics",
+        "torchvision": "torchvision",
+    }.get(name)
+    if module is None:
+        return True  # mock needs nothing
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _openvino_devices() -> List[str]:
+    try:
+        import openvino
+
+        return list(openvino.Core().available_devices)
+    except Exception:
+        return []
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -184,7 +230,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
     print(f"wrote {made} demo images to {target.resolve()}")
     demo_args = argparse.Namespace(
         images=target, model="mock", conf=0.25, classes="object,person,vehicle",
-        labels=None, host="127.0.0.1", port=args.port, open=False, reload=False,
+        labels=None, device=None, host="127.0.0.1", port=args.port,
+        open=False, reload=False,
     )
     return cmd_serve(demo_args)
 
