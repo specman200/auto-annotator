@@ -193,6 +193,33 @@ If the layout ever looks scrambled after an update, it is a stale stylesheet in
 the browser cache: the GUI is now served with revalidation forced, so one reload
 fixes it (Ctrl+Shift+R if you are still on an old build).
 
+## Cloud folders (Box, Dropbox, Drive, OneDrive)
+
+There is no Box/Dropbox/Drive API integration: the tool works on a local
+directory. What does work is pointing it at a synced folder that the desktop
+client has mounted, since that is just a path:
+
+```bash
+auto-annotator serve ~/Box/wildlife-survey          # macOS / Linux
+auto-annotator serve "C:\Users\you\Box\wildlife-survey"   # Windows
+```
+
+Annotations are written to `.auto-annotator/` inside that folder, so they sync
+back with the images and your team sees them. Worth knowing before you do this:
+
+* **The first scan downloads everything.** Each image is opened to read its
+  dimensions, so a client that streams files on demand (Box Drive's placeholders,
+  Drive's "stream" mode) will hydrate the whole folder. Point it at a subfolder,
+  or mark the folder for offline use first.
+* **Two people annotating the same image will conflict** — whichever save syncs
+  last wins, and some clients keep the loser as a "conflicted copy". Annotations
+  are one file per image, so this only bites on the same image, not the project.
+* **Export with `--image-mode copy`** if the export lands in the synced folder;
+  symlinks do not survive most sync clients (the export falls back to copying
+  automatically when a symlink is refused).
+* Keep the images out of the folder your model weights sync from — nothing breaks,
+  but you will be uploading gigabytes you do not need to.
+
 ## Where annotations live
 
 Next to your images, in a sidecar folder — the images themselves are never

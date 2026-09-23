@@ -68,6 +68,12 @@ function labelColor(label) {
 
 const uid = () => Math.random().toString(16).slice(2, 14);
 
+/* Encode a project-relative path for a URL.
+   encodeURI leaves #, ? and & alone, so "photo #3.jpg" would arrive at the
+   server truncated — segment-wise encodeURIComponent keeps the separators
+   while escaping everything else. */
+const encodePath = (path) => path.split('/').map(encodeURIComponent).join('/');
+
 /* ------------------------------------------------------------ data loading */
 
 async function loadProject() {
@@ -88,7 +94,7 @@ async function loadProject() {
 
 async function openImage(path) {
   if (state.dirty) await save();
-  const record = await api(`/api/images/${encodeURI(path)}`);
+  const record = await api(`/api/images/${encodePath(path)}`);
   state.current = path;
   state.record = record;
   state.selectedId = null;
@@ -96,7 +102,7 @@ async function openImage(path) {
   state.redo = [];
   img.onload = () => { fitView(); render(); };
   img.onerror = () => toast(`could not load image: ${path}`, true);
-  img.src = `/api/file/${encodeURI(path)}`;
+  img.src = `/api/file/${encodePath(path)}`;
   $('canvas-empty').hidden = true;
   renderImageList();
   renderAnnotations();
@@ -710,7 +716,7 @@ async function save() {
   const path = state.current;
 
   try {
-    const data = await api(`/api/images/${encodeURI(path)}/annotations`, {
+    const data = await api(`/api/images/${encodePath(path)}/annotations`, {
       method: 'PUT',
       body: JSON.stringify(payload),
     });
@@ -745,7 +751,7 @@ async function predictCurrent() {
   button.disabled = true;
   button.textContent = 'running…';
   try {
-    const data = await api(`/api/images/${encodeURI(state.current)}/predict`, {
+    const data = await api(`/api/images/${encodePath(state.current)}/predict`, {
       method: 'POST',
       body: JSON.stringify({ conf: state.conf, merge: state.merge }),
     });
@@ -833,7 +839,7 @@ async function step(delta) {
 async function markReviewed() {
   if (!state.current) return;
   await save();
-  const data = await api(`/api/images/${encodeURI(state.current)}/status`, {
+  const data = await api(`/api/images/${encodePath(state.current)}/status`, {
     method: 'POST',
     body: JSON.stringify({ status: 'reviewed' }),
   });

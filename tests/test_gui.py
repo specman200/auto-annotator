@@ -464,3 +464,50 @@ def test_an_edit_during_a_save_is_not_lost(one_big_box):
     box = page.evaluate("state.record.annotations[0].box")
     assert box["x1"] == pytest.approx(0.3, abs=1e-6), "first edit lost"
     assert box["y1"] == pytest.approx(0.4, abs=1e-6), "second edit lost to a stale reply"
+
+
+def test_awkward_filenames_load_and_save(browser, tmp_path_factory):
+    """Shared folders are full of names like "photo #3.jpg"; # and ? break naive URLs."""
+    import threading
+    import time
+
+    import uvicorn
+    from PIL import Image
+
+    from auto_annotator.server import create_app
+
+    images = tmp_path_factory.mktemp("odd-names")
+    names = ["plain.jpg", "photo #3.jpg", "a&b.jpg", "what?.jpg", "my photo.jpg"]
+    for name in names:
+        Image.new("RGB", (64, 48), "teal").save(images / name)
+
+    port = free_port()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(images, model_spec="mock", conf=0.2),
+                       host="127.0.0.1", port=port, log_level="error")
+    )
+    threading.Thread(target=server.run, daemon=True).start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.05)
+
+    page = browser.new_page(viewport={"width": 1100, "height": 760})
+    failures = []
+    page.on("response", lambda r: failures.append(r.url) if r.status == 404 else None)
+    try:
+        page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+        page.wait_for_timeout(400)
+        for name in names:
+            page.evaluate("(name) => openImage(name)", name)
+            page.wait_for_timeout(350)
+            assert page.evaluate("img.naturalWidth") == 64, f"{name} did not load"
+
+            page.click("#btn-predict")
+            page.wait_for_timeout(600)
+            assert page.evaluate("state.record.annotations.length") > 0, f"{name}: no boxes"
+            assert page.evaluate("state.record.path") == name
+        assert failures == [], f"404s: {failures}"
+    finally:
+        page.close()
+        server.should_exit = True
