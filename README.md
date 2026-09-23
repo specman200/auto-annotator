@@ -193,6 +193,27 @@ If the layout ever looks scrambled after an update, it is a stale stylesheet in
 the browser cache: the GUI is now served with revalidation forced, so one reload
 fixes it (Ctrl+Shift+R if you are still on an old build).
 
+## "Connection refused"
+
+The command now prints its URL only once the port actually answers, so the
+address it shows is always live. If a browser still refuses the connection:
+
+* **You opened the URL before it was ready.** Older builds printed the address
+  first and scanned the image folder afterwards, which can take a while on a big
+  or cloud-synced folder. Wait for the `ready →` line.
+* **The port is taken.** `serve` checks before scanning and exits with
+  `port 8000 is already in use`, suggesting a free one. A previous run left
+  running in another terminal is the usual culprit.
+* **`localhost` vs `127.0.0.1` on Windows.** `localhost` can resolve to the IPv6
+  `::1` while the server listens on IPv4 `127.0.0.1`, which refuses instantly.
+  Use the `http://127.0.0.1:8000` form the command prints.
+* **You are browsing from another machine** (or from Windows to a WSL server).
+  The default binds to loopback only; pass `--host 0.0.0.0` to accept outside
+  connections, and reach it at the machine's IP.
+* **The server exited.** It runs in the foreground: closing the terminal, or the
+  SSH session, stops it. Check that window for a traceback — a missing model file
+  is reported at the first inference, not at startup.
+
 ## Cloud folders (Box, Dropbox, Drive, OneDrive)
 
 There is no Box/Dropbox/Drive API integration: the tool works on a local

@@ -150,29 +150,101 @@ def build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------- commands
 
 
+def _probe_host(host: str) -> str:
+    """The address to connect to when checking a server bound to ``host``."""
+    return "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
+
+
+def port_is_free(host: str, port: int) -> bool:
+    import socket
+
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((_probe_host(host) if host == "" else host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _next_free_port(host: str, port: int, tries: int = 20) -> Optional[int]:
+    for candidate in range(port + 1, port + 1 + tries):
+        if port_is_free(host, candidate):
+            return candidate
+    return None
+
+
+def _wait_until_serving(host: str, port: int, timeout: float = 180.0) -> bool:
+    """Block until the port actually accepts a connection."""
+    import socket
+    import time
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket() as probe:
+            probe.settimeout(0.3)
+            if probe.connect_ex((_probe_host(host), port)) == 0:
+                return True
+        time.sleep(0.05)
+    return False
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
+    import threading
+
     import uvicorn
 
     from .server import create_app
 
-    url = f"http://{args.host}:{args.port}"
+    url = f"http://{_probe_host(args.host)}:{args.port}"
     print(f"auto-annotator {__version__}")
     print(f"  images : {Path(args.images).resolve()}")
     print(f"  model  : {args.model}")
-    print(f"  GUI    : {url}")
 
-    if args.open:
-        import threading
-        import webbrowser
+    # Check the port before anything else: binding fails after the scan
+    # otherwise, and the user is left staring at a URL that never worked.
+    if not port_is_free(args.host, args.port):
+        alternative = _next_free_port(args.host, args.port)
+        print(
+            f"error: port {args.port} is already in use — another auto-annotator, "
+            f"or something else on that port."
+            + (f" Try: --port {alternative}" if alternative else ""),
+            file=sys.stderr,
+        )
+        return 3
 
-        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-
+    print(f"  scanning {Path(args.images).resolve()} …", flush=True)
     options = _detector_options(args)
     app = create_app(
         args.images, model_spec=args.model, conf=args.conf,
         classes=_classes(args.classes), **options,
     )
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    project = app.state.annotator_state.project
+    print(f"  found {len(project)} images", flush=True)
+
+    # The URL is only worth printing once the port answers: a large or
+    # cloud-synced folder takes a while to scan, and a URL shown before then
+    # just refuses the connection.
+    def announce() -> None:
+        if not _wait_until_serving(args.host, args.port):
+            print("  (the server did not come up)", file=sys.stderr)
+            return
+        print(f"\n  ready → {url}", flush=True)
+        if args.host == "0.0.0.0":
+            print("  (listening on every interface; reachable from other machines)")
+        print("  press Ctrl+C to stop", flush=True)
+        if args.open:
+            import webbrowser
+
+            webbrowser.open(url)
+
+    threading.Thread(target=announce, daemon=True).start()
+
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    except OSError as exc:   # lost the race for the port, or a bad --host
+        print(f"error: could not start the server: {exc}", file=sys.stderr)
+        return 3
     return 0
 
 
