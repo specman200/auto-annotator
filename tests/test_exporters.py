@@ -85,21 +85,50 @@ def test_yolo_links_images_by_default_and_can_copy_or_skip(labelled, tmp_path):
     assert (bare / "labels" / "train" / "a.txt").exists()
 
 
+def split_of(out):
+    return {
+        split: sorted(p.name for p in (out / "labels" / split).iterdir())
+        for split in ("train", "val", "test")
+    }
+
+
 def test_yolo_val_split_is_deterministic(project, tmp_path):
     for path in project.paths():
         project.set_annotations(path, [Annotation("cat", Box(0, 0, 0.5, 0.5))])
 
-    def split_of(out):
-        return {
-            "train": sorted(p.name for p in (out / "labels" / "train").iterdir()),
-            "val": sorted(p.name for p in (out / "labels" / "val").iterdir()),
-        }
-
     first = split_of(exporters.export_yolo(project, tmp_path / "one", val_split=0.5))
     second = split_of(exporters.export_yolo(project, tmp_path / "two", val_split=0.5))
-    assert first == second
-    assert first["val"], "a 50% split should hold something back"
-    assert len(first["train"]) + len(first["val"]) == 3
+    assert first == second, "re-exporting must not reshuffle the split"
+    assert sum(len(names) for names in first.values()) == 3
+
+
+def test_yolo_splits_three_ways_in_roughly_the_right_proportions(image_dir, tmp_path):
+    """Enough images that the hash-based split can be checked as a ratio."""
+    from PIL import Image
+
+    from auto_annotator.store import Project
+
+    for index in range(200):
+        Image.new("RGB", (20, 20)).save(image_dir / f"bulk_{index:03d}.jpg")
+    project = Project(image_dir)
+    for path in project.paths():
+        project.set_annotations(path, [Annotation("cat", Box(0, 0, 0.5, 0.5))])
+
+    out = exporters.export_yolo(project, tmp_path / "ds", val_split=0.2, test_split=0.1)
+    counts = {split: len(names) for split, names in split_of(out).items()}
+    total = sum(counts.values())
+    assert total == 203
+    assert 0.6 < counts["train"] / total < 0.8
+    assert 0.12 < counts["val"] / total < 0.28
+    assert 0.04 < counts["test"] / total < 0.18
+    assert "test: images/test" in (out / "data.yaml").read_text()
+
+
+def test_yolo_rejects_splits_that_leave_no_training_data(labelled, tmp_path):
+    with pytest.raises(ValueError):
+        exporters.export_yolo(labelled, tmp_path / "x", val_split=0.6, test_split=0.5)
+    with pytest.raises(ValueError):
+        exporters.export_yolo(labelled, tmp_path / "y", test_split=-0.1)
 
 
 def test_yolo_flattens_nested_paths_without_collisions(project, tmp_path):

@@ -238,9 +238,15 @@ ds/
 ```
 
 ```bash
-auto-annotator export ./images -f yolo -o ./ds --val-split 0.2
+auto-annotator export ./images -f yolo -o ./ds --val-split 0.2 --test-split 0.1
 yolo detect train data=./ds/data.yaml model=yolo11n.pt
 ```
+
+`--val-split` and `--test-split` hold back those fractions; the rest is training
+data. Each image's split is decided by hashing its path, so labelling more images
+and re-exporting leaves the existing ones where they were instead of reshuffling
+your validation set. The flip side is that the proportions are approximate — on a
+small dataset a split can come out empty, and the command says so when it does.
 
 Images are symlinked into the dataset so nothing is duplicated; pass
 `--image-mode copy` if the dataset has to be moved or zipped, or
@@ -250,6 +256,59 @@ Nested images are flattened (`nested/c.png` → `nested__c.png`) to fit YOLO's
 flat layout, and `data.yaml` points at the export directory, not your source
 folder.
 
+## Merging with another dataset
+
+`merge` combines your annotations with datasets from elsewhere — a Roboflow
+export, say — into one trainable dataset:
+
+```bash
+auto-annotator merge ./images roboflow.zip -o ./dataset --val-split 0.2 --test-split 0.1
+yolo detect train data=./dataset/data.yaml model=yolo11n.pt
+```
+
+Sources can be a folder you annotated here, a YOLO dataset directory, or a `.zip`
+straight from Roboflow — mix as many as you like. Roboflow's layout
+(`train/images`, `valid/…`) and this tool's (`images/train`, …) are both read, and
+`valid` is normalised to `val`.
+
+**The class lists are reconciled by name.** Two datasets number their classes
+independently, so `0` means "car" in one and "person" in the other; labels are
+rewritten against a unified list as they are merged, and the command prints the
+final table so you can check it:
+
+```
+  splits   train: 49, val: 14, test: 7
+  classes  3
+      0  car        from my-images, roboflow
+      1  truck      from my-images
+      2  person     from my-images, roboflow
+```
+
+Run it with `--dry-run` first to see that table without writing anything. If the
+two datasets spell a class differently, unify them with `--map`:
+
+```bash
+auto-annotator merge ./images roboflow.zip -o ./dataset --map Car=car --map Person=person
+```
+
+Other things worth knowing:
+
+* **Existing splits are kept.** A downloaded dataset's validation images were held
+  out deliberately, so reshuffling them against yours leaks them into training.
+  `--val-split`/`--test-split` apply to images with no split of their own — yours.
+  `--resplit` overrides that and re-splits everything together.
+* **Identical images are caught.** Any image byte-identical to one already merged
+  is reported, because the same picture in train and val inflates every metric.
+  `--drop-duplicates` keeps only the first.
+* **Filename clashes are kept apart** by prefixing the source name, so nothing is
+  silently overwritten.
+* Segmentation polygons and oriented boxes pass through untouched — only the
+  class id at the start of each row is rewritten.
+* Images are copied by default; `--image-mode link` symlinks them instead.
+
+Roboflow's COCO and VOC exports are not YOLO; re-download the zip in a YOLO
+format and `merge` will say so if you don't.
+
 ## Commands
 
 ```
@@ -258,7 +317,11 @@ auto-annotator serve    <images> [--model SPEC] [--conf F] [--classes ...] [--la
 auto-annotator annotate <images> [--model SPEC] [--conf F] [--merge MODE] [--all] [--only-new]
                                  [--labels ...] [--device DEV]
 auto-annotator export   <images> [-f coco|yolo|voc|csv] [-o PATH] [--include-empty]
-                                 [--val-split F] [--image-mode link|copy|none]
+                                 [--val-split F] [--test-split F]
+                                 [--image-mode link|copy|none]
+auto-annotator merge    <sources...> -o PATH [--val-split F] [--test-split F]
+                                 [--resplit] [--map OLD=NEW] [--drop-duplicates]
+                                 [--image-mode copy|link] [--dry-run]
 auto-annotator stats    <images>
 auto-annotator backends
 auto-annotator demo     [--dir D] [--count N]

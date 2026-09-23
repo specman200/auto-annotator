@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import json
 import shutil
 import time
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from xml.etree import ElementTree as ET
 
+from .datasets import SPLITS, assign_split, write_data_yaml
 from .schema import ImageRecord
 from .store import Project
 
@@ -121,6 +121,7 @@ def export_yolo(
     only_annotated: bool = True,
     images: str = "link",
     val_split: float = 0.0,
+    test_split: float = 0.0,
 ) -> Path:
     """Ultralytics-ready YOLO dataset (the format YOLOv5/v8/v11 all read).
 
@@ -135,27 +136,35 @@ def export_yolo(
             data.yaml
             classes.txt
 
-    ``val_split`` holds back that fraction of images for validation, chosen
-    deterministically so re-exporting keeps the same split.
+    ``val_split`` and ``test_split`` hold back those fractions for validation
+    and testing, chosen deterministically from each image's path so that
+    re-exporting after labelling more images leaves the existing ones where
+    they were.
     """
     if images not in ("link", "copy", "none"):
         raise ValueError(f"unknown image mode {images!r}; use link, copy or none")
-    if not 0.0 <= val_split < 1.0:
-        raise ValueError("val_split must be in [0, 1)")
+    if val_split < 0 or test_split < 0:
+        raise ValueError("split fractions cannot be negative")
+    if val_split + test_split >= 1.0:
+        raise ValueError(
+            f"val_split + test_split must leave room for training data "
+            f"(got {val_split + test_split})"
+        )
 
     records = _records(project, only_annotated)
     classes = _class_list(project, records)
     class_ids = {name: index for index, name in enumerate(classes)}
 
     out_dir = Path(out_dir)
-    for split in ("train", "val"):
+    for split in SPLITS:
         (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
     taken: set = set()
-    counts = {"train": 0, "val": 0}
+    ratios = (1.0 - val_split - test_split, val_split, test_split)
+    counts = {split: 0 for split in SPLITS}
     for record in records:
-        split = "val" if _in_val(record.path, val_split) else "train"
+        split = assign_split(record.path, ratios)
         counts[split] += 1
         stem = _unique_stem(record.path, taken)
         source = project.abs_path(record.path)
@@ -176,28 +185,8 @@ def export_yolo(
         )
 
     (out_dir / "classes.txt").write_text("\n".join(classes) + "\n", encoding="utf-8")
-
-    names = "\n".join(f"  {i}: {name}" for i, name in enumerate(classes))
-    val_path = "images/val" if counts["val"] else "images/train"
-    note = (
-        "" if counts["val"]
-        else "# val mirrors train: re-export with val_split to hold images out\n"
-    )
-    (out_dir / "data.yaml").write_text(
-        f"# written by auto-annotator\n{note}"
-        f"path: {out_dir.resolve()}\ntrain: images/train\nval: {val_path}\n"
-        f"names:\n{names}\n",
-        encoding="utf-8",
-    )
+    write_data_yaml(out_dir, classes, counts)
     return out_dir
-
-
-def _in_val(relpath: str, val_split: float) -> bool:
-    """Deterministic split, so a re-export never reshuffles train and val."""
-    if val_split <= 0:
-        return False
-    digest = hashlib.sha256(relpath.encode("utf-8")).digest()
-    return (int.from_bytes(digest[:4], "big") % 10_000) < val_split * 10_000
 
 
 def export_voc(
@@ -289,7 +278,9 @@ def export(
     if fmt == "csv":
         return export_csv(project, out or default_root / "annotations.csv", only_annotated)
     if fmt == "yolo":
-        yolo_options = {k: v for k, v in options.items() if k in ("images", "val_split")}
+        yolo_options = {
+            k: v for k, v in options.items() if k in ("images", "val_split", "test_split")
+        }
         return export_yolo(
             project, out or default_root / "yolo", only_annotated, **yolo_options
         )

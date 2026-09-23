@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -10,7 +11,7 @@ from typing import List, Optional
 from . import __version__, exporters
 from .engine import MERGE_KEEP_HUMAN, MERGE_MODES, Annotator
 from .inference import BACKEND_HELP, load_detector
-from .store import Project
+from .store import PROJECT_DIRNAME, Project
 
 
 def invocation() -> str:
@@ -102,8 +103,37 @@ def build_parser() -> argparse.ArgumentParser:
                         help="also export images that have no boxes")
     export.add_argument("--val-split", type=float, default=0.0, metavar="F",
                         help="yolo: hold back this fraction of images for validation")
+    export.add_argument("--test-split", type=float, default=0.0, metavar="F",
+                        help="yolo: hold back this fraction of images for testing")
     export.add_argument("--image-mode", choices=("link", "copy", "none"), default="link",
                         help="yolo: symlink (default), copy, or omit the image files")
+
+    merge = subparsers.add_parser(
+        "merge",
+        help="combine YOLO datasets (yours plus, say, a Roboflow zip) into one",
+    )
+    merge.add_argument(
+        "sources", nargs="+", type=Path,
+        help="datasets to merge: image folders annotated here, YOLO dataset "
+             "directories, or .zip downloads",
+    )
+    merge.add_argument("-o", "--out", type=Path, required=True,
+                       help="directory to write the merged dataset to")
+    merge.add_argument("--val-split", type=float, default=0.2, metavar="F",
+                       help="fraction for validation, for images with no split (default: 0.2)")
+    merge.add_argument("--test-split", type=float, default=0.1, metavar="F",
+                       help="fraction for testing, for images with no split (default: 0.1)")
+    merge.add_argument("--resplit", action="store_true",
+                       help="ignore the sources' own splits and re-split everything")
+    merge.add_argument("--image-mode", choices=("copy", "link"), default="copy",
+                       help="copy images (default) or symlink them")
+    merge.add_argument("--map", action="append", default=[], metavar="OLD=NEW",
+                       help="rename a class while merging, e.g. --map Car=car "
+                            "(repeatable); this is how two datasets' names are unified")
+    merge.add_argument("--drop-duplicates", action="store_true",
+                       help="skip images that are byte-identical to one already merged")
+    merge.add_argument("--dry-run", action="store_true",
+                       help="report what would be merged without writing anything")
 
     stats = subparsers.add_parser("stats", help="summarize a project")
     stats.add_argument("images", type=Path)
@@ -178,9 +208,90 @@ def cmd_export(args: argparse.Namespace) -> int:
     project = Project(args.images)
     path = exporters.export(
         project, args.format, args.out, only_annotated=not args.include_empty,
-        images=args.image_mode, val_split=args.val_split,
+        images=args.image_mode, val_split=args.val_split, test_split=args.test_split,
     )
     print(f"wrote {args.format} export to {path}")
+    if args.format == "yolo":
+        _report_splits(path, {"val": args.val_split, "test": args.test_split})
+    return 0
+
+
+def _report_splits(dataset_dir: Path, requested: dict) -> None:
+    counts = {}
+    for split in ("train", "val", "test"):
+        labels = dataset_dir / "labels" / split
+        counts[split] = len(list(labels.glob("*.txt"))) if labels.is_dir() else 0
+    print("  " + ", ".join(f"{split}: {count}" for split, count in counts.items()))
+    for split, fraction in requested.items():
+        if fraction and not counts[split]:
+            print(
+                f"  ! asked for {fraction:.0%} {split} but no image landed there — "
+                f"splits are assigned by hashing each filename, which is only "
+                f"approximate on a small dataset",
+                file=sys.stderr,
+            )
+
+
+def cmd_merge(args: argparse.Namespace) -> int:
+    from . import datasets as ds
+
+    class_map = {}
+    for pair in args.map:
+        if "=" not in pair:
+            print(f"error: --map needs OLD=NEW, got {pair!r}", file=sys.stderr)
+            return 2
+        old, _, new = pair.partition("=")
+        class_map[old] = new
+
+    scratch = Path(args.out) / ".unpacked"
+    loaded = []
+    for source in args.sources:
+        source = Path(source)
+        if (source / PROJECT_DIRNAME).is_dir():
+            # An image folder annotated here: export it first, then merge that.
+            # The requested ratios apply to these images — a downloaded dataset
+            # keeps the splits it shipped with unless --resplit says otherwise.
+            project = Project(source)
+            staged = scratch / f"{source.name}-export"
+            exporters.export_yolo(
+                project, staged, images="link",
+                val_split=args.val_split, test_split=args.test_split,
+            )
+            print(f"exported {len(project.annotated_records())} annotated images "
+                  f"from {source}")
+            loaded.append(ds.load_dataset(staged, source=source.name))
+        else:
+            loaded.append(
+                ds.load_dataset(source, source=source.stem,
+                                extract_to=scratch / source.stem)
+            )
+
+    for dataset in loaded:
+        counts = ", ".join(f"{k}: {v}" for k, v in dataset.counts().items())
+        print(f"  {dataset.source:<24} {len(dataset.items)} images ({counts}), "
+              f"{len(dataset.names)} classes [{dataset.layout} layout]")
+
+    if args.dry_run:
+        names, _, origin = ds.unify_names(loaded, class_map)
+        print(f"\nwould merge into {len(names)} classes:")
+        for index, name in enumerate(names):
+            print(f"  {index:>3}  {name:<24} from {', '.join(origin[name])}")
+        print("\n(dry run: nothing written)")
+        return 0
+
+    ratios = ds.normalize_ratios(None, args.val_split, args.test_split)
+    report = ds.merge_datasets(
+        loaded, args.out, ratios=ratios, resplit=args.resplit,
+        image_mode=args.image_mode, class_map=class_map,
+        drop_duplicates=args.drop_duplicates,
+    )
+    shutil.rmtree(scratch, ignore_errors=True)
+    print()
+    print(report.describe())
+    if not report.per_split.get("train"):
+        print("\nerror: the merged dataset has no training images", file=sys.stderr)
+        return 1
+    print(f"\ntrain with:  yolo detect train data={Path(args.out).resolve()}/data.yaml")
     return 0
 
 
@@ -256,6 +367,7 @@ COMMANDS = {
     "serve": cmd_serve,
     "annotate": cmd_annotate,
     "export": cmd_export,
+    "merge": cmd_merge,
     "stats": cmd_stats,
     "backends": cmd_backends,
     "demo": cmd_demo,
