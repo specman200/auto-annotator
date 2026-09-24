@@ -511,3 +511,136 @@ def test_awkward_filenames_load_and_save(browser, tmp_path_factory):
     finally:
         page.close()
         server.should_exit = True
+
+
+def select_only_box(page, box):
+    """Put one box on the open image and select it."""
+    page.evaluate(
+        """async (box) => {
+            await fetch('/api/images/img_1.png/annotations', {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({annotations: [{label: 'cat', box,
+                    score: 0.9, source: 'model'}], status: 'predicted'})});
+        }""",
+        box,
+    )
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(500)
+    page.evaluate("() => selectAnnotation(state.record.annotations[0].id)")
+    page.wait_for_timeout(150)
+
+
+def handle_geometry(page):
+    return page.evaluate(
+        """() => {
+            const a = state.record.annotations[0];
+            const p1 = imageToScreen(a.box.x1 * img.naturalWidth, a.box.y1 * img.naturalHeight);
+            const p2 = imageToScreen(a.box.x2 * img.naturalWidth, a.box.y2 * img.naturalHeight);
+            return {a: p1, b: p2, specs: handleSpecs(p1, p2),
+                    radius: grabRadius(p1, p2), drawn: HANDLE};
+        }"""
+    )
+
+
+def test_a_handles_active_area_matches_the_square_it_draws(gui):
+    """A target far bigger than the drawn handle makes placement look wrong."""
+    page, _ = gui
+    select_only_box(page, {"x1": 0.2, "y1": 0.2, "x2": 0.8, "y2": 0.8})
+    geometry = handle_geometry(page)
+    ratio = (geometry["radius"] * 2) / geometry["drawn"]
+    assert 0.8 <= ratio <= 1.3, f"active area is {ratio:.2f}x the drawn handle"
+
+
+def test_every_active_pixel_grabs_its_nearest_handle(gui):
+    """"First within tolerance" let a click nearer the edge handle grab a corner."""
+    page, _ = gui
+    select_only_box(page, {"x1": 0.2, "y1": 0.2, "x2": 0.8, "y2": 0.8})
+    result = page.evaluate(
+        """() => {
+            const a = state.record.annotations[0];
+            const p1 = imageToScreen(a.box.x1 * img.naturalWidth, a.box.y1 * img.naturalHeight);
+            const p2 = imageToScreen(a.box.x2 * img.naturalWidth, a.box.y2 * img.naturalHeight);
+            const specs = handleSpecs(p1, p2);
+            let samples = 0, mismatches = 0;
+            for (const [, sx, sy] of specs) {
+                for (let dx = -12; dx <= 12; dx++) {
+                    for (let dy = -12; dy <= 12; dy++) {
+                        const got = handleAt(screenToImage(sx + dx, sy + dy));
+                        if (!got) continue;
+                        samples++;
+                        let nearest = null, best = Infinity;
+                        for (const [name, hx, hy] of specs) {
+                            const distance = Math.hypot(sx + dx - hx, sy + dy - hy);
+                            if (distance < best) { best = distance; nearest = name; }
+                        }
+                        if (got !== nearest) mismatches++;
+                    }
+                }
+            }
+            return {samples, mismatches};
+        }"""
+    )
+    assert result["samples"] > 500, "the active areas seem to have vanished"
+    assert result["mismatches"] == 0
+
+
+def test_a_small_box_offers_only_corner_handles(gui):
+    """Mid-edge handles on a tiny box sit on the corners and become a lottery."""
+    page, _ = gui
+    select_only_box(page, {"x1": 0.45, "y1": 0.45, "x2": 0.48, "y2": 0.475})
+    geometry = handle_geometry(page)
+    names = {spec[0] for spec in geometry["specs"]}
+    assert names == {"nw", "ne", "sw", "se"}, f"got {names}"
+    assert geometry["radius"] < 6, "the grab radius should shrink with the box"
+
+
+@pytest.mark.parametrize("handle,edge,delta", [
+    ("e", "x2", (25, 0)), ("w", "x1", (-25, 0)),
+    ("n", "y1", (0, -25)), ("s", "y2", (0, 25)),
+])
+def test_dragging_a_handle_moves_only_its_own_edge(gui, handle, edge, delta):
+    page, _ = gui
+    select_only_box(page, {"x1": 0.25, "y1": 0.25, "x2": 0.75, "y2": 0.75})
+    spot = page.evaluate(
+        """(name) => {
+            const a = state.record.annotations[0];
+            const r = canvas.getBoundingClientRect();
+            const p1 = imageToScreen(a.box.x1 * img.naturalWidth, a.box.y1 * img.naturalHeight);
+            const p2 = imageToScreen(a.box.x2 * img.naturalWidth, a.box.y2 * img.naturalHeight);
+            const spec = handleSpecs(p1, p2).find((s) => s[0] === name);
+            return {x: r.left + spec[1], y: r.top + spec[2], box: {...a.box}};
+        }""",
+        handle,
+    )
+    page.mouse.move(spot["x"], spot["y"])
+    page.mouse.down()
+    page.mouse.move(spot["x"] + delta[0], spot["y"] + delta[1], steps=6)
+    page.mouse.up()
+    page.wait_for_timeout(400)
+
+    after = page.evaluate("state.record.annotations[0].box")
+    changed = [key for key in ("x1", "y1", "x2", "y2")
+               if abs(after[key] - spot["box"][key]) > 0.001]
+    assert changed == [edge], f"dragging {handle} changed {changed}"
+
+
+def test_the_label_does_not_sit_on_the_corner_handle(gui):
+    """Drawn over the handle, it hid a control that still answered clicks."""
+    page, _ = gui
+    select_only_box(page, {"x1": 0.3, "y1": 0.3, "x2": 0.7, "y2": 0.7})
+    overlap = page.evaluate(
+        """() => {
+            const a = state.record.annotations[0];
+            const p1 = imageToScreen(a.box.x1 * img.naturalWidth, a.box.y1 * img.naturalHeight);
+            const context = canvas.getContext('2d');
+            context.font = '11px ui-sans-serif, system-ui, sans-serif';
+            const width = context.measureText('cat 0.90').width + 8;
+            const inset = HANDLE / 2 + 2;
+            const left = p1.x + inset;
+            const top = p1.y > 16 ? p1.y - 15 - inset : p1.y + 1 + inset;
+            const half = HANDLE / 2;
+            return !(left > p1.x + half || left + width < p1.x - half ||
+                     top > p1.y + half || top + 14 < p1.y - half);
+        }"""
+    )
+    assert overlap is False

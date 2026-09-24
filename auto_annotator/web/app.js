@@ -2,8 +2,11 @@
 'use strict';
 
 const $ = (id) => document.getElementById(id);
-const HANDLE = 9;          // resize-handle size, in screen pixels
-const GRAB = 10;           // how far from a handle still counts as grabbing it
+const HANDLE = 11;         // drawn size of a resize handle, in screen pixels
+const HANDLE_GRAB = 6;     // half-extent of its active area — kept close to the
+                           // drawn size, so the target is where the eye says
+const MIN_SIDE_FOR_EDGE_HANDLES = 30;  // narrower than this and a mid-edge handle
+                           // cannot be told apart from the corners, so it is not offered
 const MIN_BOX = 3;         // ignore drags smaller than this (screen pixels)
 const MIN_BOX_PX = 2;      // ...and smaller than this in image pixels once clamped
 const SAVE_DELAY = 500;    // debounce for autosave
@@ -349,36 +352,66 @@ function drawBox(annotation, selected, hovered = false) {
   if (selected) {
     ctx.fillStyle = color.replace('hsl', 'hsla').replace(')', ', 0.14)');
     ctx.fillRect(a.x, a.y, w, h);
-    ctx.fillStyle = color;
-    for (const [hx, hy] of handlePoints(a, b)) {
-      ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
-    }
   }
 
+  // The label goes on before the handles: drawn after, it covered the top-left
+  // handle, hiding a control that still responded to clicks. It also starts
+  // clear of that handle so the two never sit on each other.
   const score = annotation.score == null ? '' : ` ${annotation.score.toFixed(2)}`;
   const text = `${annotation.label}${score}`;
   ctx.font = '11px ui-sans-serif, system-ui, sans-serif';
   const width = ctx.measureText(text).width + 8;
-  const top = a.y > 16 ? a.y - 15 : a.y + 1;
+  const inset = selected ? HANDLE / 2 + 2 : 0;
+  const top = a.y > 16 ? a.y - 15 - inset : a.y + 1 + inset;
   ctx.fillStyle = color;
-  ctx.fillRect(a.x, top, width, 14);
+  ctx.fillRect(a.x + inset, top, width, 14);
   ctx.fillStyle = '#0d1117';
-  ctx.fillText(text, a.x + 4, top + 11);
+  ctx.fillText(text, a.x + inset + 4, top + 11);
+
+  if (selected) {
+    // Outlined so the exact centre is unmistakable at any zoom.
+    for (const [, hx, hy] of handleSpecs(a, b)) {
+      ctx.fillStyle = color;
+      ctx.fillRect(hx - HANDLE / 2, hy - HANDLE / 2, HANDLE, HANDLE);
+      ctx.strokeStyle = '#0d1117';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(hx - HANDLE / 2 + 0.5, hy - HANDLE / 2 + 0.5, HANDLE - 1, HANDLE - 1);
+    }
+  }
   ctx.restore();
 }
 
-function handlePoints(a, b) {
-  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-  return [
-    [a.x, a.y], [mx, a.y], [b.x, a.y],
-    [a.x, my],             [b.x, my],
-    [a.x, b.y], [mx, b.y], [b.x, b.y],
+/* The handles a box actually offers, as [name, x, y] in screen pixels.
+
+   Corners are always there. Mid-edge handles appear only when that edge is
+   long enough for them to be distinguishable — on a small box they would sit
+   almost on top of the corners, which is what made grabbing one a lottery. */
+function handleSpecs(a, b) {
+  const width = Math.abs(b.x - a.x);
+  const height = Math.abs(b.y - a.y);
+  const midX = (a.x + b.x) / 2;
+  const midY = (a.y + b.y) / 2;
+
+  const specs = [
+    ['nw', a.x, a.y], ['ne', b.x, a.y], ['sw', a.x, b.y], ['se', b.x, b.y],
   ];
+  if (width >= MIN_SIDE_FOR_EDGE_HANDLES) {
+    specs.push(['n', midX, a.y], ['s', midX, b.y]);
+  }
+  if (height >= MIN_SIDE_FOR_EDGE_HANDLES) {
+    specs.push(['w', a.x, midY], ['e', b.x, midY]);
+  }
+  return specs;
+}
+
+/* How far off a handle still counts as grabbing it: never more than a third of
+   the box, so two handles can never claim the same pixel. */
+function grabRadius(a, b) {
+  const shortest = Math.min(Math.abs(b.x - a.x), Math.abs(b.y - a.y));
+  return Math.max(3, Math.min(HANDLE_GRAB, shortest / 3));
 }
 
 /* ------------------------------------------------------------ hit  testing */
-
-const HANDLE_NAMES = ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'];
 
 function handleAt(point) {
   const annotation = selectedAnnotation();
@@ -387,14 +420,21 @@ function handleAt(point) {
   const a = imageToScreen(px.x1, px.y1);
   const b = imageToScreen(px.x2, px.y2);
   const screen = imageToScreen(point.x, point.y);
-  const points = handlePoints(a, b);
-  for (let i = 0; i < points.length; i++) {
-    if (Math.abs(screen.x - points[i][0]) <= GRAB &&
-        Math.abs(screen.y - points[i][1]) <= GRAB) {
-      return HANDLE_NAMES[i];
+  const radius = grabRadius(a, b);
+
+  // Nearest wins: with "first within tolerance" a click closer to the top edge
+  // handle could still grab the corner one.
+  let best = null;
+  let bestDistance = Infinity;
+  for (const [name, x, y] of handleSpecs(a, b)) {
+    if (Math.abs(screen.x - x) > radius || Math.abs(screen.y - y) > radius) continue;
+    const distance = Math.hypot(screen.x - x, screen.y - y);
+    if (distance < bestDistance) {
+      best = name;
+      bestDistance = distance;
     }
   }
-  return null;
+  return best;
 }
 
 function annotationsAt(point) {

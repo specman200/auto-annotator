@@ -155,6 +155,13 @@ The cursor tells you what a drag will do: a resize arrow over a handle, a move
 cursor inside a box, a crosshair where a drag would draw a new one. The box under
 the cursor is highlighted, on the canvas and in the list.
 
+A selected box shows eight handles — four corners, plus the edge midpoints when
+the box is big enough for them to be told apart. Each one responds where it is
+drawn: the grabbable area is the size of the square you can see, it shrinks with
+the box so two handles never claim the same pixel, and the nearest handle always
+wins. Boxes too small for eight handles show the four corners only; for anything
+fiddlier, select the box and use the arrow keys.
+
 Everything saves itself half a second after you stop editing — `Ctrl+S` forces it,
 `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, scroll zooms, space-drag pans, `F` fits.
 
