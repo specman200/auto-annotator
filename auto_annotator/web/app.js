@@ -26,6 +26,7 @@ const state = {
   drag: null,         // active pointer interaction
   hoveredId: null,    // box under the cursor, highlighted for discoverability
   drawMode: false,    // draw new boxes even when the drag starts inside one
+  panMode: false,     // drag the image around instead of drawing or selecting
   cursor: null,       // last pointer position, in canvas pixels
   undo: [],
   redo: [],
@@ -111,6 +112,7 @@ async function openImage(path) {
   renderImageList();
   renderAnnotations();
   renderPosition();
+  renderReviewButton();
 }
 
 function visibleImages() {
@@ -560,7 +562,9 @@ canvas.addEventListener('pointerdown', (event) => {
   canvas.setPointerCapture(event.pointerId);
   const point = pointerPosition(event);
 
-  if (spaceDown || event.button === 1) {
+  // Space, the middle button and the right button all pan, as does pan mode —
+  // a trackpad has no middle button and a held key is easy to miss.
+  if (spaceDown || state.panMode || event.button === 1 || event.button === 2) {
     state.drag = { mode: 'pan', startX: event.clientX, startY: event.clientY,
                    originX: state.view.x, originY: state.view.y };
     canvas.classList.add('panning');
@@ -599,7 +603,7 @@ const HANDLE_CURSORS = {
 };
 
 function updateCursor(point, shiftKey = false) {
-  if (spaceDown) { canvas.style.cursor = 'grab'; return; }
+  if (spaceDown || state.panMode) { canvas.style.cursor = 'grab'; return; }
   if (shiftKey || state.drawMode) { canvas.style.cursor = 'crosshair'; return; }
   const handle = handleAt(point);
   if (handle) { canvas.style.cursor = HANDLE_CURSORS[handle]; return; }
@@ -682,6 +686,9 @@ canvas.addEventListener('pointerup', (event) => {
   }
   render();
 });
+
+// Right-dragging to pan must not raise the context menu.
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
 canvas.addEventListener('pointerleave', () => {
   state.cursor = null;
@@ -791,6 +798,16 @@ function nudgeSelection(key, resize) {
   render();
 }
 
+/* With nothing selected the arrow keys move the view, which is the keyboard
+   way to pan. */
+function panView(key, step) {
+  if (key === 'ArrowLeft') state.view.x += step;
+  if (key === 'ArrowRight') state.view.x -= step;
+  if (key === 'ArrowUp') state.view.y += step;
+  if (key === 'ArrowDown') state.view.y -= step;
+  render();
+}
+
 function applyLabel(label) {
   const annotation = selectedAnnotation();
   if (!annotation) { toast('select a box first'); return; }
@@ -802,8 +819,20 @@ function applyLabel(label) {
   render();
 }
 
+function setPanMode(enabled) {
+  state.panMode = enabled;
+  if (enabled) setDrawMode(false);
+  $('btn-pan-mode').classList.toggle('active', enabled);
+  canvas.style.cursor = enabled ? 'grab' : 'crosshair';
+  if (enabled) toast('pan mode: drag to move the image (H, or hold space)');
+}
+
 function setDrawMode(enabled) {
   state.drawMode = enabled;
+  if (enabled) {
+    state.panMode = false;
+    $('btn-pan-mode').classList.remove('active');
+  }
   $('btn-draw-mode').classList.toggle('active', enabled);
   canvas.style.cursor = 'crosshair';
   render();
@@ -952,19 +981,42 @@ async function step(delta) {
   if (next && next.path !== state.current) await openImage(next.path);
 }
 
-async function markReviewed() {
+function isReviewed() {
+  return Boolean(state.record && state.record.status === 'reviewed');
+}
+
+function renderReviewButton() {
+  const button = $('btn-review');
+  const reviewed = isReviewed();
+  button.classList.toggle('active', reviewed);
+  button.textContent = reviewed ? '✓ Reviewed' : '✓ Mark reviewed';
+  button.title = reviewed
+    ? 'Reviewed — click (or V) to put it back in the queue'
+    : 'Mark reviewed and go to the next image (V)';
+}
+
+/* Marking sends you on to the next image; unmarking keeps you here, because
+   you are about to change something. */
+async function toggleReviewed() {
   if (!state.current) return;
   await save();
+  const reviewed = isReviewed();
+  const next = reviewed
+    ? (state.record.annotations.length ? 'predicted' : 'new')
+    : 'reviewed';
+
   const data = await api(`/api/images/${encodePath(state.current)}/status`, {
     method: 'POST',
-    body: JSON.stringify({ status: 'reviewed' }),
+    body: JSON.stringify({ status: next }),
   });
   const entry = state.images.find((item) => item.path === state.current);
   if (entry) entry.status = data.image.status;
   if (state.record) state.record.status = data.image.status;
   renderStats(data.stats);
   renderImageList();
-  await step(1);
+  renderReviewButton();
+  if (!reviewed) await step(1);
+  else toast('back in the queue');
 }
 
 /* ------------------------------------------------------------------ layout */
@@ -1194,9 +1246,10 @@ $('btn-predict').onclick = predictCurrent;
 $('btn-predict-all').onclick = predictAll;
 $('btn-prev').onclick = () => step(-1);
 $('btn-next').onclick = () => step(1);
-$('btn-review').onclick = markReviewed;
+$('btn-review').onclick = toggleReviewed;
 $('btn-fit').onclick = () => { fitView(); render(); };
 $('btn-draw-mode').onclick = () => setDrawMode(!state.drawMode);
+$('btn-pan-mode').onclick = () => setPanMode(!state.panMode);
 $('job-cancel').onclick = () => {
   if (state.job) api(`/api/jobs/${state.job}/cancel`, { method: 'POST' }).catch(() => {});
 };
@@ -1251,7 +1304,14 @@ document.addEventListener('keydown', (event) => {
   if (inField) return;
   // A select keeps its own arrow/typeahead keys, but Delete means "drop the box".
   if (inSelect && event.key !== 'Delete' && event.key !== 'Backspace') return;
-  if (event.code === 'Space') { spaceDown = true; return; }
+  if (event.code === 'Space') {
+    // Without this the space also activates whatever button has focus —
+    // pressing space to pan just after clicking "Run on image" re-ran it.
+    event.preventDefault();
+    spaceDown = true;
+    canvas.style.cursor = 'grab';
+    return;
+  }
 
   const ctrl = event.ctrlKey || event.metaKey;
   if (ctrl && event.key.toLowerCase() === 's') { event.preventDefault(); save(); return; }
@@ -1261,9 +1321,13 @@ document.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.key.startsWith('Arrow') && selectedAnnotation() && !inSelect) {
+  if (event.key.startsWith('Arrow') && !inSelect) {
     event.preventDefault();
-    nudgeSelection(event.key, event.shiftKey);
+    if (selectedAnnotation()) {
+      nudgeSelection(event.key, event.shiftKey);
+    } else {
+      panView(event.key, event.shiftKey ? 200 : 60);
+    }
     return;
   }
 
@@ -1275,11 +1339,12 @@ document.addEventListener('keydown', (event) => {
       if (state.drawMode) setDrawMode(false);
       state.selectedId = null; renderAnnotations(); render(); break;
     case 'd': case 'D': setDrawMode(!state.drawMode); break;
+    case 'h': case 'H': setPanMode(!state.panMode); break;
     case 'f': case 'F': fitView(); render(); break;
     case 'n': case 'N': case 'ArrowRight': step(1); break;
     case 'p': case 'P': case 'ArrowLeft': step(-1); break;
     case 'r': case 'R': predictCurrent(); break;
-    case 'v': case 'V': markReviewed(); break;
+    case 'v': case 'V': toggleReviewed(); break;
     default:
       if (/^[1-9]$/.test(event.key)) {
         const label = state.classes[Number(event.key) - 1];
@@ -1289,7 +1354,10 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('keyup', (event) => {
-  if (event.code === 'Space') spaceDown = false;
+  if (event.code === 'Space') {
+    spaceDown = false;
+    canvas.style.cursor = state.panMode ? 'grab' : 'crosshair';
+  }
 });
 
 window.addEventListener('beforeunload', (event) => {

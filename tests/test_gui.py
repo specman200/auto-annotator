@@ -716,3 +716,172 @@ def test_the_drawing_buffer_tracks_the_element_on_load(gui):
             return Math.abs(canvas.width / ratio - r.width) < 1
                 && Math.abs(canvas.height / ratio - r.height) < 1; }"""
     )
+
+
+def test_the_image_can_be_panned_four_ways(gui):
+    """Space+drag alone was too well hidden, and a trackpad has no middle button."""
+    page, _ = gui
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(400)
+
+    def view():
+        return page.evaluate("({x: state.view.x, y: state.view.y, scale: state.view.scale})")
+
+    # 1. the pan mode button
+    before = view()
+    page.click("#btn-pan-mode")
+    page.wait_for_timeout(200)
+    assert page.evaluate("state.panMode") is True
+    assert page.evaluate("canvas.style.cursor") == "grab"
+    page.mouse.move(600, 400)
+    page.mouse.down()
+    page.mouse.move(690, 460, steps=8)
+    page.mouse.up()
+    page.wait_for_timeout(250)
+    after = view()
+    assert abs(after["x"] - before["x"] - 90) < 3
+    assert abs(after["y"] - before["y"] - 60) < 3
+    assert after["scale"] == before["scale"], "panning must not zoom"
+    page.click("#btn-pan-mode")
+    page.wait_for_timeout(150)
+
+    # 2. the right button, with no mode and no key held
+    before = view()
+    page.mouse.move(600, 400)
+    page.mouse.down(button="right")
+    page.mouse.move(550, 370, steps=6)
+    page.mouse.up(button="right")
+    page.wait_for_timeout(250)
+    assert abs(view()["x"] - before["x"] + 50) < 3
+
+    # 3. holding space
+    before = view()
+    page.keyboard.down(" ")
+    page.mouse.move(600, 400)
+    page.mouse.down()
+    page.mouse.move(640, 430, steps=6)
+    page.mouse.up()
+    page.keyboard.up(" ")
+    page.wait_for_timeout(250)
+    assert abs(view()["x"] - before["x"] - 40) < 3
+
+    # 4. the arrow keys, with nothing selected
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(150)
+    before = view()
+    page.keyboard.press("ArrowRight")
+    page.wait_for_timeout(200)
+    assert view()["x"] < before["x"] - 30
+
+
+def test_panning_never_draws_or_moves_a_box(gui):
+    page, _ = gui
+    select_only_box(page, {"x1": 0.3, "y1": 0.3, "x2": 0.7, "y2": 0.7})
+    before = page.evaluate("state.record.annotations[0].box")
+    page.click("#btn-pan-mode")
+    page.wait_for_timeout(150)
+
+    # start the drag inside the box: it should move the view, not the box
+    spot = page.evaluate(
+        """() => { const a = state.record.annotations[0];
+            const r = canvas.getBoundingClientRect();
+            const p = imageToScreen((a.box.x1 + a.box.x2) / 2 * img.naturalWidth,
+                                    (a.box.y1 + a.box.y2) / 2 * img.naturalHeight);
+            return {x: r.left + p.x, y: r.top + p.y}; }"""
+    )
+    page.mouse.move(spot["x"], spot["y"])
+    page.mouse.down()
+    page.mouse.move(spot["x"] + 60, spot["y"] + 40, steps=6)
+    page.mouse.up()
+    page.wait_for_timeout(300)
+
+    assert page.evaluate("state.record.annotations.length") == 1
+    assert page.evaluate("state.record.annotations[0].box") == before
+    page.click("#btn-pan-mode")
+
+
+def test_space_pans_without_firing_the_focused_button(gui):
+    """Space used to activate whatever button had focus, so inference re-ran."""
+    page, _ = gui
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(400)
+    page.locator("#btn-predict").focus()
+    count = page.evaluate("state.record.annotations.length")
+
+    page.keyboard.down(" ")
+    page.mouse.move(600, 400)
+    page.mouse.down()
+    page.mouse.move(650, 430, steps=6)
+    page.mouse.up()
+    page.keyboard.up(" ")
+    page.wait_for_timeout(700)
+
+    assert page.evaluate("state.record.annotations.length") == count
+
+
+def test_a_reviewed_image_can_be_put_back_in_the_queue(gui):
+    """Marking reviewed used to be a one-way door."""
+    page, _ = gui
+    # give it a box, so un-reviewing returns it to "predicted" rather than "new"
+    select_only_box(page, {"x1": 0.3, "y1": 0.3, "x2": 0.6, "y2": 0.6})
+    assert "Mark reviewed" in page.locator("#btn-review").inner_text()
+
+    page.click("#btn-review")
+    page.wait_for_timeout(700)
+    assert page.evaluate("() => state.images.find(i => i.path === 'img_1.png').status") == "reviewed"
+
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(500)
+    label = page.locator("#btn-review").inner_text()
+    assert "Reviewed" in label and "Mark" not in label
+    assert page.evaluate("document.getElementById('btn-review').classList.contains('active')")
+
+    page.click("#btn-review")
+    page.wait_for_timeout(700)
+    assert page.evaluate("state.record.status") == "predicted"
+    assert page.evaluate("state.current") == "img_1.png", "un-reviewing should stay put"
+    assert page.evaluate(
+        "() => state.images.find(i => i.path === 'img_1.png').status"
+    ) == "predicted"
+
+    page.reload(wait_until="networkidle")
+    page.wait_for_timeout(600)
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(400)
+    assert page.evaluate("state.record.status") == "predicted", "un-review must persist"
+
+
+def test_un_reviewing_an_empty_image_returns_it_to_new(gui):
+    """With no boxes there is nothing predicted, so it goes back to untouched."""
+    page, _ = gui
+    page.evaluate(
+        """async () => {
+            await fetch('/api/images/img_2.png/annotations', {
+                method: 'PUT', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({annotations: [], status: 'new'})});
+        }"""
+    )
+    page.evaluate("() => openImage('img_2.png')")
+    page.wait_for_timeout(400)
+    page.click("#btn-review")
+    page.wait_for_timeout(700)
+    page.evaluate("() => openImage('img_2.png')")
+    page.wait_for_timeout(400)
+    page.click("#btn-review")
+    page.wait_for_timeout(700)
+    assert page.evaluate("state.record.status") == "new"
+
+
+def test_v_toggles_the_reviewed_state(gui):
+    page, _ = gui
+    page.evaluate("() => openImage('img_2.png')")
+    page.wait_for_timeout(400)
+    page.keyboard.press("v")
+    page.wait_for_timeout(700)
+    assert page.evaluate("() => state.images.find(i => i.path === 'img_2.png').status") == "reviewed"
+
+    page.evaluate("() => openImage('img_2.png')")
+    page.wait_for_timeout(400)
+    page.keyboard.press("v")
+    page.wait_for_timeout(700)
+    assert page.evaluate("state.record.status") in ("predicted", "new")

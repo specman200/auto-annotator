@@ -144,9 +144,14 @@ what gets detected.
 * **Nudge** — arrow keys move the selected box a pixel at a time, `Shift`+arrows
   resize it. This is the way to adjust a box whose handles sit off-screen or
   under other boxes, which happens a lot with dense predictions.
-* **Review flow** — `V` marks the image reviewed and jumps to the next one.
-  Reviewed images are skipped by `Run on all…`, so a second pass only touches
-  what you have not checked.
+* **Review flow** — `V` (or the ✓ button) marks the image reviewed and jumps to
+  the next one. Reviewed images are skipped by `Run on all…`, so a second pass
+  only touches what you have not checked. On an image already reviewed the button
+  reads **✓ Reviewed**, and pressing it again puts the image back in the queue
+  without moving you off it — use the `reviewed` filter in the sidebar to find one.
+* **Pan** — hold space and drag, drag with the right button, turn on ✋ Pan (`H`),
+  or press the arrow keys with nothing selected. Scroll zooms around the cursor,
+  `F` fits the image to the window.
 
 Boxes are dashed while they are the model's and solid once you have touched them;
 the dots in the image list are grey (new), amber (predicted) and green (reviewed).
@@ -163,7 +168,7 @@ wins. Boxes too small for eight handles show the four corners only; for anything
 fiddlier, select the box and use the arrow keys.
 
 Everything saves itself half a second after you stop editing — `Ctrl+S` forces it,
-`Ctrl+Z` / `Ctrl+Shift+Z` undo and redo, scroll zooms, space-drag pans, `F` fits.
+and `Ctrl+Z` / `Ctrl+Shift+Z` undo and redo.
 
 ### Boxes inside boxes
 

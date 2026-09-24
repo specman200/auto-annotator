@@ -87,13 +87,17 @@
               title="Draw new boxes even inside existing ones (D) — or hold Shift">
         ✛ Draw
       </button>
+      <button id="btn-pan-mode"
+              title="Drag to move the image around (H) — or hold space, or drag with the right button">
+        ✋ Pan
+      </button>
       <button id="btn-reset-layout" title="Restore the default panel sizes">
         Reset layout
       </button>
       <span class="divider"></span>
       <span class="hint" id="cursor-readout"></span>
       <span class="spacer"></span>
-      <span class="hint">drag to draw · shift+drag inside a box to nest · click again to cycle stacked · scroll to zoom</span>
+      <span class="hint">drag to draw · shift+drag to nest · scroll to zoom · space, right-drag or ✋ to pan</span>
     </div>
   </section>
 
@@ -130,13 +134,14 @@
         <dl class="shortcuts">
           <dt>R</dt><dd>run model on this image</dd>
           <dt>N / P</dt><dd>next / previous image</dd>
-          <dt>V</dt><dd>mark reviewed, go next</dd>
+          <dt>V</dt><dd>reviewed on / off</dd>
           <dt>1–9</dt><dd>set class of selection</dd>
           <dt>Del</dt><dd>delete selected box</dd>
         <dt>click</dt><dd>again to cycle stacked boxes</dd>
         <dt>Shift+drag</dt><dd>draw a box inside another</dd>
         <dt>D</dt><dd>draw mode (no Shift needed)</dd>
-          <dt>←↑↓→</dt><dd>nudge box (Shift: resize)</dd>
+        <dt>H</dt><dd>pan mode (or hold space)</dd>
+          <dt>←↑↓→</dt><dd>nudge box, or pan with none selected</dd>
           <dt>Ctrl+Z</dt><dd>undo (Shift to redo)</dd>
           <dt>Ctrl+S</dt><dd>save now</dd>
           <dt>F / Esc</dt><dd>fit view / deselect</dd>
