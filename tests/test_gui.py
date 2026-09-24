@@ -644,3 +644,75 @@ def test_the_label_does_not_sit_on_the_corner_handle(gui):
         }"""
     )
     assert overlap is False
+
+
+def test_a_box_is_drawn_under_the_cursor_after_the_canvas_changes_size(gui):
+    """A canvas resized with no window resize event left a stale drawing buffer.
+
+    The browser then stretched that buffer into the element, offsetting
+    everything drawn from the cursor by a gap that grew across the canvas.
+    The status bar's hint wrapping on a narrow window does it during the
+    first layout, so the very first box drawn could land tens of pixels out.
+    """
+    page, _ = gui
+    page.evaluate("() => openImage('img_1.png')")
+    page.wait_for_timeout(400)
+    page.keyboard.press("d")
+    page.wait_for_timeout(150)
+
+    # Shrink the canvas the way a reflowing status bar does: no resize event.
+    page.evaluate("() => { document.querySelector('.statusbar').style.paddingBottom = '70px'; }")
+    page.wait_for_timeout(300)
+
+    synced = page.evaluate(
+        """() => { const r = canvas.getBoundingClientRect();
+            const ratio = window.devicePixelRatio || 1;
+            return Math.abs(canvas.height / ratio - r.height) < 1
+                && Math.abs(canvas.width / ratio - r.width) < 1; }"""
+    )
+    assert synced, "the drawing buffer did not follow the element's new size"
+
+    for fx, fy in ((0.2, 0.2), (0.55, 0.5), (0.8, 0.7)):
+        rect = page.evaluate(
+            "() => { const r = canvas.getBoundingClientRect();"
+            " return {l: r.left, t: r.top, w: r.width, h: r.height}; }"
+        )
+        x = rect["l"] + rect["w"] * fx
+        y = rect["t"] + rect["h"] * fy
+        before = page.evaluate("state.record.annotations.length")
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x + 40, y + 30, steps=6)
+        page.mouse.up()
+        page.wait_for_timeout(350)
+        assert page.evaluate("state.record.annotations.length") == before + 1
+
+        painted = page.evaluate(
+            """() => {
+                const a = state.record.annotations[state.record.annotations.length - 1];
+                const r = canvas.getBoundingClientRect();
+                const ratio = window.devicePixelRatio || 1;
+                const p = imageToScreen(a.box.x1 * img.naturalWidth,
+                                        a.box.y1 * img.naturalHeight);
+                // where the browser paints it: buffer coordinates as stretched
+                // into whatever size the element currently is
+                const sx = r.width / (canvas.width / ratio);
+                const sy = r.height / (canvas.height / ratio);
+                return {x: r.left + p.x * sx, y: r.top + p.y * sy};
+            }"""
+        )
+        assert abs(painted["x"] - x) < 2, f"drawn {painted['x'] - x:.1f}px off horizontally"
+        assert abs(painted["y"] - y) < 2, f"drawn {painted['y'] - y:.1f}px off vertically"
+
+
+def test_the_drawing_buffer_tracks_the_element_on_load(gui):
+    """The buffer is built before the first layout settles; it must catch up."""
+    page, _ = gui
+    page.set_viewport_size({"width": 980, "height": 680})
+    page.wait_for_timeout(400)
+    assert page.evaluate(
+        """() => { const r = canvas.getBoundingClientRect();
+            const ratio = window.devicePixelRatio || 1;
+            return Math.abs(canvas.width / ratio - r.width) < 1
+                && Math.abs(canvas.height / ratio - r.height) < 1; }"""
+    )

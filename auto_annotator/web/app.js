@@ -257,6 +257,7 @@ function screenToImage(x, y) {
 }
 
 function pointerPosition(event) {
+  ensureCanvasSynced();
   const rect = canvas.getBoundingClientRect();
   return screenToImage(event.clientX - rect.left, event.clientY - rect.top);
 }
@@ -270,11 +271,37 @@ function fitView() {
   state.view.y = (rect.height - img.naturalHeight * scale) / 2;
 }
 
+/* The size the drawing buffer was last built for. */
+let canvasBox = { width: 0, height: 0, ratio: 0 };
+
+function canvasIsStale() {
+  const rect = canvas.getBoundingClientRect();
+  const ratio = window.devicePixelRatio || 1;
+  return (
+    Math.abs(rect.width - canvasBox.width) > 0.5 ||
+    Math.abs(rect.height - canvasBox.height) > 0.5 ||
+    ratio !== canvasBox.ratio
+  );
+}
+
+/* Re-sync before using the canvas for anything positional.
+
+   A stale buffer is stretched by the browser into whatever size the element
+   now is, which offsets everything drawn from the cursor by a gap that grows
+   across the canvas. The element can change size with no window resize at
+   all — the status bar's hint wrapping on a narrow window is enough, and that
+   happens during the first layout. */
+function ensureCanvasSynced() {
+  if (canvasIsStale()) resizeCanvas();
+}
+
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
   const ratio = window.devicePixelRatio || 1;
   canvas.width = Math.max(1, Math.round(rect.width * ratio));
   canvas.height = Math.max(1, Math.round(rect.height * ratio));
+  canvasBox = { width: rect.width, height: rect.height, ratio };
   // Scale by what the buffer actually is over what CSS shows, not by the
   // nominal ratio: the two differ once rounding is involved, and the
   // difference stretches everything drawn away from the cursor.
@@ -1270,6 +1297,27 @@ window.addEventListener('beforeunload', (event) => {
 });
 
 window.addEventListener('resize', () => { reclampLayout(); resizeCanvas(); });
+
+// Anything that changes the canvas's box — a wrapping status bar, a panel
+// drag, the window — re-syncs the buffer, with or without a resize event.
+if (typeof ResizeObserver !== 'undefined') {
+  new ResizeObserver(() => ensureCanvasSynced()).observe(canvas);
+}
+
+/* A window dragged to a monitor with different scaling changes the pixel
+   ratio without changing any CSS size, so watch for that too. */
+function watchPixelRatio() {
+  if (!window.matchMedia) return;
+  const media = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onChange = () => {
+    resizeCanvas();
+    watchPixelRatio();
+  };
+  if (media.addEventListener) {
+    media.addEventListener('change', onChange, { once: true });
+  }
+}
+watchPixelRatio();
 
 setUpLayout();
 resizeCanvas();
