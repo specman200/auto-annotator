@@ -173,7 +173,9 @@ another one (a wheel inside a car, a face inside a person) needs one of these:
 * **Shift+drag** — draws a new box even when the drag starts inside an existing
   one. The parent stays put; the new box is selected, ready to relabel.
 * **Draw mode** (`D`, or the ✛ Draw button) — every drag draws, no Shift needed.
-  Good for a run of nested labels. `Esc` leaves it.
+  Good for a run of nested labels. `Esc` leaves it. A dashed crosshair follows the
+  cursor while it is on, and a marker pins the corner once a drag starts, so you
+  can see exactly where the box is anchored.
 
 Nest as deep as you like: boxes are independent annotations, so a child is just a
 box that happens to sit inside another. Exports carry no parent/child link — if

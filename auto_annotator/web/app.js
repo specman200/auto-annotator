@@ -26,6 +26,7 @@ const state = {
   drag: null,         // active pointer interaction
   hoveredId: null,    // box under the cursor, highlighted for discoverability
   drawMode: false,    // draw new boxes even when the drag starts inside one
+  cursor: null,       // last pointer position, in canvas pixels
   undo: [],
   redo: [],
   dirty: false,
@@ -272,9 +273,12 @@ function fitView() {
 function resizeCanvas() {
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.round(rect.width * ratio);
-  canvas.height = Math.round(rect.height * ratio);
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  canvas.width = Math.max(1, Math.round(rect.width * ratio));
+  canvas.height = Math.max(1, Math.round(rect.height * ratio));
+  // Scale by what the buffer actually is over what CSS shows, not by the
+  // nominal ratio: the two differ once rounding is involved, and the
+  // difference stretches everything drawn away from the cursor.
+  ctx.setTransform(canvas.width / rect.width, 0, 0, canvas.height / rect.height, 0, 0);
   render();
 }
 
@@ -319,6 +323,8 @@ function render() {
     drawBox(annotation, annotation.id === state.selectedId,
             annotation.id === state.hoveredId);
   }
+  drawGuides();
+
   if (state.drag && state.drag.mode === 'draw' && state.drag.box) {
     const { x1, y1, x2, y2 } = state.drag.box;
     const a = imageToScreen(x1, y1), b = imageToScreen(x2, y2);
@@ -329,6 +335,41 @@ function render() {
     ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
     ctx.restore();
   }
+}
+
+/* In draw mode the exact anchor matters, so show it: full-height and
+   full-width lines through the cursor, and a marker on the corner a drag
+   has already pinned. */
+function drawGuides() {
+  const drawing = state.drag && state.drag.mode === 'draw';
+  if (!state.drawMode && !drawing) return;
+
+  const rect = canvas.getBoundingClientRect();
+  ctx.save();
+  ctx.strokeStyle = 'rgba(76, 154, 255, 0.55)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+
+  if (state.cursor) {
+    const x = Math.round(state.cursor.x) + 0.5;   // crisp 1px lines
+    const y = Math.round(state.cursor.y) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, rect.height);
+    ctx.moveTo(0, y);
+    ctx.lineTo(rect.width, y);
+    ctx.stroke();
+  }
+
+  if (drawing) {
+    const anchor = imageToScreen(state.drag.start.x, state.drag.start.y);
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#4c9aff';
+    ctx.fillRect(anchor.x - 3, anchor.y - 3, 6, 6);
+    ctx.strokeStyle = '#0d1117';
+    ctx.strokeRect(anchor.x - 3.5, anchor.y - 3.5, 7, 7);
+  }
+  ctx.restore();
 }
 
 function drawBox(annotation, selected, hovered = false) {
@@ -540,6 +581,8 @@ function updateCursor(point, shiftKey = false) {
 
 canvas.addEventListener('pointermove', (event) => {
   const point = pointerPosition(event);
+  const rect = canvas.getBoundingClientRect();
+  state.cursor = { x: event.clientX - rect.left, y: event.clientY - rect.top };
   if (img.naturalWidth) {
     $('cursor-readout').textContent =
       `${Math.round(point.x)}, ${Math.round(point.y)} px`;
@@ -610,6 +653,11 @@ canvas.addEventListener('pointerup', (event) => {
       renderAnnotations();
     }
   }
+  render();
+});
+
+canvas.addEventListener('pointerleave', () => {
+  state.cursor = null;
   render();
 });
 
@@ -730,7 +778,8 @@ function applyLabel(label) {
 function setDrawMode(enabled) {
   state.drawMode = enabled;
   $('btn-draw-mode').classList.toggle('active', enabled);
-  canvas.style.cursor = enabled ? 'crosshair' : 'default';
+  canvas.style.cursor = 'crosshair';
+  render();
   if (enabled) toast('draw mode: drags make new boxes, even inside existing ones');
 }
 
