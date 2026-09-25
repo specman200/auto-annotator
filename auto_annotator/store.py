@@ -18,9 +18,12 @@ different images, can never take out the whole project.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import stat
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -32,15 +35,89 @@ from .schema import (
     ImageRecord,
 )
 
+log = logging.getLogger(__name__)
+
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 PROJECT_DIRNAME = ".auto-annotator"
 
 
+# Waits between attempts to replace a file another process is holding open.
+REPLACE_DELAYS = (0.05, 0.1, 0.2, 0.4, 0.8)
+
+
+def _clear_read_only(path: Path) -> None:
+    """Sync clients mark files read-only while they upload; undo that."""
+    try:
+        if path.exists():
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except OSError:
+        pass
+
+
+def _save_error(path: Path, cause: OSError) -> OSError:
+    """One message for every way a save can be refused, saying what to do."""
+    return OSError(
+        f"cannot save annotations to {path}: {cause}. Something else is holding "
+        f"the file — a sync client (Box, OneDrive, Dropbox) uploading it, or a "
+        f"virus scanner. It usually clears in a moment; pausing the sync client "
+        f"while you annotate avoids it, as does keeping the images on a local "
+        f"disk and exporting to the synced folder when you are done."
+    )
+
+
 def _atomic_write_json(path: Path, payload: Any) -> None:
+    """Write JSON so an interrupted save cannot leave a half-written file.
+
+    The write goes to a temporary file and is renamed over the target, which
+    is atomic on every platform we care about. On Windows that rename fails
+    with "access is denied" whenever something else has the target open for a
+    moment — a sync client uploading it (Box, OneDrive, Dropbox) or a virus
+    scanner reading it. Those locks are brief, so retry; and if the rename
+    truly cannot be done, fall back to writing the file in place rather than
+    losing the annotations.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    text = json.dumps(payload, indent=2)
+
+    # A unique name per write: two saves of the same image at once would
+    # otherwise share one temporary file and clobber each other.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+    except OSError as exc:      # the folder itself is locked or read-only
+        raise _save_error(path, exc) from exc
+
+    try:
+        last_error: Optional[OSError] = None
+        for delay in (*REPLACE_DELAYS, None):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as exc:      # Windows: the target is locked
+                last_error = exc
+                _clear_read_only(path)
+            except OSError as exc:
+                last_error = exc
+            if delay is None:
+                break
+            time.sleep(delay)
+
+        # The rename will not go through. Writing in place gives up atomicity
+        # for this one save, which is a better trade than dropping the work.
+        try:
+            _clear_read_only(path)
+            path.write_text(text, encoding="utf-8")
+            log.warning(
+                "could not replace %s (%s); wrote it in place instead", path, last_error
+            )
+            return
+        except OSError as exc:
+            raise _save_error(path, exc) from exc
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass  # already renamed away, or gone
 
 
 def _slug(relpath: str) -> str:

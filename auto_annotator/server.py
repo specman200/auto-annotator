@@ -116,9 +116,13 @@ def create_app(
             ]
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"bad annotation: {exc}")
-        record = state.project.set_annotations(
-            path, annotations, status=payload.get("status")
-        )
+        try:
+            record = state.project.set_annotations(
+                path, annotations, status=payload.get("status")
+            )
+        except OSError as exc:
+            # The GUI shows this verbatim, so it has to say what to do.
+            raise HTTPException(status_code=503, detail=str(exc))
         return {"image": record.to_dict(), "stats": state.project.stats(),
                 "classes": state.project.classes}
 

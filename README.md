@@ -249,6 +249,13 @@ back with the images and your team sees them. Worth knowing before you do this:
 * **Two people annotating the same image will conflict** — whichever save syncs
   last wins, and some clients keep the loser as a "conflicted copy". Annotations
   are one file per image, so this only bites on the same image, not the project.
+* **Saves retry when the sync client holds a file.** On Windows a save can fail
+  with `[WinError 5] Access is denied` because Box Drive (or a virus scanner) has
+  the annotation file open for a moment. Saving retries for about a second and
+  then writes in place rather than losing the work; if it still cannot, the GUI
+  says so instead of silently dropping the edit. Pausing the sync client while
+  you annotate avoids it entirely, as does keeping images on a local disk and
+  exporting into the synced folder when you are done.
 * **Export with `--image-mode copy`** if the export lands in the synced folder;
   symlinks do not survive most sync clients (the export falls back to copying
   automatically when a symlink is refused).
