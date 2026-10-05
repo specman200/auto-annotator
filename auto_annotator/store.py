@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .schema import (
     STATUS_NEW,
@@ -36,6 +36,10 @@ from .schema import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Set to a callable(count, path) to watch a scan in progress. The CLI uses it
+#: to show that a slow folder is moving rather than stuck.
+SCAN_PROGRESS: Optional[Callable[[int, str], None]] = None
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 PROJECT_DIRNAME = ".auto-annotator"
@@ -177,16 +181,52 @@ class Project:
             self.config_path, {"classes": self.classes, "settings": self.settings}
         )
 
-    def rescan(self) -> List[str]:
-        """Pick up images added to the folder since the last scan."""
+    def walk_images(self, progress: Optional[Callable[[int, str], None]] = None):
+        """Yield every image under the root, relative and posix-style.
+
+        Uses os.walk rather than rglob so that it streams (a big tree reports
+        progress instead of going quiet), and so directory links can be left
+        alone: Windows user folders are full of junctions that point at their
+        own ancestors, and following them never finishes.
+        """
+        report = progress or SCAN_PROGRESS
+        seen_dirs = set()
+        count = 0
+        for directory, subdirs, files in os.walk(self.image_root, followlinks=False):
+            try:
+                key = os.stat(directory)
+                marker = (key.st_dev, key.st_ino)
+            except OSError:
+                continue
+            if marker in seen_dirs:
+                subdirs[:] = []
+                continue
+            seen_dirs.add(marker)
+
+            subdirs[:] = [
+                name for name in subdirs
+                if name != PROJECT_DIRNAME and not name.startswith(".")
+            ]
+            for name in sorted(files):
+                if Path(name).suffix.lower() not in IMAGE_SUFFIXES:
+                    continue
+                full = Path(directory) / name
+                count += 1
+                if report:
+                    report(count, str(full))
+                yield full.relative_to(self.image_root).as_posix()
+
+    def rescan(self, progress: Optional[Callable[[int, str], None]] = None) -> List[str]:
+        """Pick up images added to the folder since the last scan.
+
+        Reading each image's dimensions is deliberately not part of this: that
+        means opening every file, which on a cloud-synced folder downloads the
+        whole dataset before the GUI can start. Sizes are filled in when they
+        are actually needed — see :meth:`ensure_size`.
+        """
         with self._lock:
             found = []
-            for path in sorted(self.image_root.rglob("*")):
-                if not path.is_file() or path.suffix.lower() not in IMAGE_SUFFIXES:
-                    continue
-                if PROJECT_DIRNAME in path.parts:
-                    continue
-                rel = path.relative_to(self.image_root).as_posix()
+            for rel in self.walk_images(progress):
                 found.append(rel)
                 if rel not in self._records:
                     self._records[rel] = self._load_record(rel)
@@ -200,19 +240,46 @@ class Project:
         return self.annotation_dir / (_slug(relpath) + ".json")
 
     def _load_record(self, relpath: str) -> ImageRecord:
+        """Load an image's annotations. Its dimensions are left for later."""
         sidecar = self._sidecar_path(relpath)
         if sidecar.exists():
             try:
                 data = json.loads(sidecar.read_text(encoding="utf-8"))
                 record = ImageRecord.from_dict(data)
                 record.path = relpath  # trust the filesystem over the sidecar
-                if not record.width or not record.height:
-                    record.width, record.height = image_size(self.abs_path(relpath))
                 return record
             except (json.JSONDecodeError, OSError, KeyError):
                 pass  # corrupt sidecar: fall through and start this image fresh
-        width, height = image_size(self.abs_path(relpath))
-        return ImageRecord(path=relpath, width=width, height=height)
+        return ImageRecord(path=relpath)
+
+    def ensure_size(self, relpath: str) -> ImageRecord:
+        """Fill in an image's dimensions, reading the file only the first time.
+
+        Pixel coordinates in the exports need them; the GUI does not, because
+        the browser knows how big the image it loaded is.
+        """
+        with self._lock:
+            record = self.get(relpath)
+            if not record.width or not record.height:
+                record.width, record.height = image_size(self.abs_path(relpath))
+            return record
+
+    def ensure_sizes(
+        self,
+        records: Optional[Iterable[ImageRecord]] = None,
+        progress: Optional[Callable[[int, int], None]] = None,
+    ) -> None:
+        """Fill in dimensions for a set of images, reporting progress.
+
+        Exporting is where the cost of reading every file lands now, and on a
+        cloud-synced folder that is slow enough to need saying so.
+        """
+        targets = [r for r in (records if records is not None else self.records())
+                   if not r.width or not r.height]
+        for index, record in enumerate(targets, start=1):
+            self.ensure_size(record.path)
+            if progress:
+                progress(index, len(targets))
 
     def _persist(self, record: ImageRecord) -> None:
         _atomic_write_json(self._sidecar_path(record.path), record.to_dict())

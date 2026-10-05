@@ -207,6 +207,31 @@ If the layout ever looks scrambled after an update, it is a stale stylesheet in
 the browser cache: the GUI is now served with revalidation forced, so one reload
 fixes it (Ctrl+Shift+R if you are still on an old build).
 
+## Sharing a project with someone else
+
+Everything a second person needs is the image folder itself — the annotations
+are in `.auto-annotator/` inside it:
+
+```bash
+auto-annotator serve ./the-folder-they-sent
+```
+
+Two things catch people out:
+
+* **`.auto-annotator` is a hidden folder.** Zipping, copying or uploading with
+  "hidden files" unticked silently leaves the annotations behind, and the images
+  arrive unlabelled. On startup the tool prints how many boxes it loaded, so a
+  `0 boxes` line means the hidden folder did not travel. Zip the folder itself
+  (right-click → Send to → Compressed folder on Windows, `zip -r` on macOS and
+  Linux) rather than selecting its contents.
+* **Opening it from a cloud folder is slow the first time.** Scanning only lists
+  filenames, so the GUI starts straight away, but each image is downloaded as it
+  is opened. Making the folder available offline first is much faster.
+
+If `scanning …` takes a long time, it reports a running count every couple of
+seconds. A count that climbs is simply a big folder; a count stuck at zero means
+it is reading a very slow drive, or it is pointed somewhere unexpected.
+
 ## "Connection refused"
 
 The command now prints its URL only once the port actually answers, so the

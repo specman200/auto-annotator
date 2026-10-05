@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -150,6 +153,41 @@ def build_parser() -> argparse.ArgumentParser:
 # --------------------------------------------------------------------- commands
 
 
+@contextlib.contextmanager
+def _scan_progress(started: float):
+    """Report a running count while the folder is being scanned.
+
+    A scan that takes minutes — a cloud-synced folder, a slow network share,
+    a folder with a hundred thousand files — is indistinguishable from a hang
+    unless it says what it is doing.
+    """
+    stop = threading.Event()
+    state = {"count": 0}
+
+    def count_one(count: int, _path: str) -> None:
+        state["count"] = count
+
+    def report() -> None:
+        while not stop.wait(2.0):
+            elapsed = time.monotonic() - started
+            print(f"    … {state['count']} images so far ({elapsed:.0f}s)", flush=True)
+            if elapsed > 30 and state["count"] < 50:
+                print("      (this is slow for the number of files — if the folder "
+                      "is synced from the cloud, each file has to be downloaded; "
+                      "pointing at a local copy is much faster)", flush=True)
+
+    from . import store
+
+    store.SCAN_PROGRESS = count_one
+    thread = threading.Thread(target=report, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        store.SCAN_PROGRESS = None
+
+
 def _probe_host(host: str) -> str:
     """The address to connect to when checking a server bound to ``host``."""
     return "127.0.0.1" if host in ("0.0.0.0", "", "::") else host
@@ -190,8 +228,6 @@ def _wait_until_serving(host: str, port: int, timeout: float = 180.0) -> bool:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    import threading
-
     import uvicorn
 
     from .server import create_app
@@ -215,12 +251,27 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     print(f"  scanning {Path(args.images).resolve()} …", flush=True)
     options = _detector_options(args)
-    app = create_app(
-        args.images, model_spec=args.model, conf=args.conf,
-        classes=_classes(args.classes), **options,
-    )
+    started = time.monotonic()
+    with _scan_progress(started):
+        app = create_app(
+            args.images, model_spec=args.model, conf=args.conf,
+            classes=_classes(args.classes), **options,
+        )
     project = app.state.annotator_state.project
-    print(f"  found {len(project)} images", flush=True)
+    stats = project.stats()
+    print(f"  found {len(project)} images in {time.monotonic() - started:.1f}s"
+          f" · {stats['boxes']} boxes on {len(project.annotated_records())} of them",
+          flush=True)
+    if not len(project):
+        print(f"  ! no images found under {Path(args.images).resolve()} — "
+              f"is that the right folder?", file=sys.stderr)
+    elif not stats["boxes"] and project.annotation_dir.exists():
+        print(f"  ! {project.annotation_dir} exists but holds no annotations",
+              file=sys.stderr)
+    elif not stats["boxes"]:
+        print(f"  ! no annotations yet. If this folder came from someone else, "
+              f"check that the hidden {PROJECT_DIRNAME} folder came with it — "
+              f"zipping and copying often skip hidden folders.", file=sys.stderr)
 
     # The URL is only worth printing once the port answers: a large or
     # cloud-synced folder takes a while to scan, and a URL shown before then

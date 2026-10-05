@@ -18,8 +18,16 @@ FORMATS = ("coco", "yolo", "voc", "csv")
 
 
 def _records(project: Project, only_annotated: bool) -> List[ImageRecord]:
+    """The records to export, with their pixel dimensions filled in.
+
+    Scanning no longer opens every image, so this is where the files are read
+    — only for the images actually being exported.
+    """
     records = project.records()
-    return [r for r in records if r.annotations] if only_annotated else records
+    if only_annotated:
+        records = [r for r in records if r.annotations]
+    project.ensure_sizes(records)
+    return records
 
 
 def _class_list(project: Project, records: List[ImageRecord]) -> List[str]:

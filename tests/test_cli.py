@@ -152,3 +152,33 @@ def test_the_url_is_only_printed_once_the_port_answers(image_dir):
     finally:
         process.terminate()
         process.wait(timeout=10)
+
+
+def test_serve_reports_missing_annotations_when_a_shared_folder_lost_them(image_dir, capsys, monkeypatch):
+    """Annotations live in a hidden folder, which copying and zipping skip."""
+    import auto_annotator.cli as cli
+
+    # stop before the server actually runs; we only want the startup report
+    monkeypatch.setattr(cli, "_wait_until_serving", lambda *a, **k: False)
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+    main(["serve", str(image_dir), "--port", "0"])
+
+    output = capsys.readouterr()
+    assert "found 3 images" in output.out
+    assert "hidden" in output.err and ".auto-annotator" in output.err
+
+
+def test_serve_reports_how_much_was_annotated(image_dir, capsys, monkeypatch):
+    import auto_annotator.cli as cli
+    from auto_annotator.schema import Annotation, Box
+    from auto_annotator.store import Project
+
+    project = Project(image_dir)
+    project.set_annotations("a.jpg", [Annotation("cat", Box(0, 0, 0.5, 0.5))])
+
+    monkeypatch.setattr(cli, "_wait_until_serving", lambda *a, **k: False)
+    monkeypatch.setattr("uvicorn.run", lambda *a, **k: None)
+    main(["serve", str(image_dir), "--port", "0"])
+
+    out = capsys.readouterr().out
+    assert "1 boxes on 1 of them" in out

@@ -105,11 +105,13 @@ def create_app(
 
     @app.get("/api/images/{path:path}")
     def get_image(path: str) -> Dict[str, Any]:
-        return _record(path).to_dict()
+        _record(path)
+        return state.project.ensure_size(path).to_dict()
 
     @app.put("/api/images/{path:path}/annotations")
     def put_annotations(path: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
         _record(path)  # 404 before we parse anything
+        state.project.ensure_size(path)   # so the saved sidecar carries it
         try:
             annotations = [
                 Annotation.from_dict(item) for item in payload.get("annotations", [])
