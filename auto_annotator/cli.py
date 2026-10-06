@@ -265,6 +265,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if not len(project):
         print(f"  ! no images found under {Path(args.images).resolve()} — "
               f"is that the right folder?", file=sys.stderr)
+    elif not stats["boxes"] and project.nested_projects():
+        print(f"  ! no annotations in this folder itself", file=sys.stderr)
+        _warn_about_nested(project)
     elif not stats["boxes"] and project.annotation_dir.exists():
         print(f"  ! {project.annotation_dir} exists but holds no annotations",
               file=sys.stderr)
@@ -327,13 +330,57 @@ def cmd_annotate(args: argparse.Namespace) -> int:
     return 1 if result["errors"] else 0
 
 
+def _warn_about_nested(project: Project) -> None:
+    """Point at sub-folders annotated separately, whose labels are invisible here."""
+    nested = project.nested_projects()
+    if not nested:
+        return
+    print(
+        f"  ! {len(nested)} sub-folder(s) were annotated separately, and their "
+        f"annotations are NOT read from here:",
+        file=sys.stderr,
+    )
+    for name in nested[:5]:
+        print(f"      {name}", file=sys.stderr)
+    if len(nested) > 5:
+        print(f"      … and {len(nested) - 5} more", file=sys.stderr)
+    example = project.image_root / nested[0]
+    print(
+        f"    Run against that folder instead, e.g. "
+        f'{invocation()} export "{example}" …, or combine several with '
+        f"{invocation()} merge.",
+        file=sys.stderr,
+    )
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     project = Project(args.images)
+    annotated = len(project.annotated_records())
     path = exporters.export(
         project, args.format, args.out, only_annotated=not args.include_empty,
         images=args.image_mode, val_split=args.val_split, test_split=args.test_split,
     )
+    exported = len(project) if args.include_empty else annotated
+
+    if not exported:
+        print(f"wrote {args.format} export to {path}", file=sys.stderr)
+        print(
+            f"error: nothing was exported — none of the {len(project)} images under "
+            f"{project.image_root} have annotations here.",
+            file=sys.stderr,
+        )
+        _warn_about_nested(project)
+        if not project.nested_projects():
+            print(
+                "    Annotate them first, or pass --include-empty to export the "
+                "images with empty label files.",
+                file=sys.stderr,
+            )
+        return 1
+
     print(f"wrote {args.format} export to {path}")
+    print(f"  {exported} of {len(project)} images")
+    _warn_about_nested(project)
     if args.format == "yolo":
         _report_splits(path, {"val": args.val_split, "test": args.test_split})
     return 0
@@ -420,6 +467,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
 
 def cmd_stats(args: argparse.Namespace) -> int:
     project = Project(args.images)
+    _warn_about_nested(project)
     stats = project.stats()
     print(f"{project.image_root}")
     print(f"  images   : {stats['images']}")

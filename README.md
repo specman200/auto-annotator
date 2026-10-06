@@ -207,6 +207,29 @@ If the layout ever looks scrambled after an update, it is a stale stylesheet in
 the browser cache: the GUI is now served with revalidation forced, so one reload
 fixes it (Ctrl+Shift+R if you are still on an old build).
 
+## One folder per project
+
+A project is the folder you point `serve` at: its annotations live in
+`.auto-annotator/` inside that folder, named relative to it. So if you annotate
+`PPE Dataset/Arun`, exporting `PPE Dataset` finds the images but none of the
+labels — a project never reads a sub-folder's annotations.
+
+Export the folder you annotated:
+
+```bash
+auto-annotator export "PPE Dataset/Arun" -f yolo -o ./dataset
+```
+
+If several sub-folders were annotated separately — one per person, say — combine
+them with `merge`, which also reconciles their class lists:
+
+```bash
+auto-annotator merge "PPE Dataset/Arun" "PPE Dataset/Sam" -o ./dataset
+```
+
+`export`, `stats` and `serve` all name any sub-folders annotated on their own, so
+an empty export says which folder actually holds the labels.
+
 ## Sharing a project with someone else
 
 Everything a second person needs is the image folder itself — the annotations

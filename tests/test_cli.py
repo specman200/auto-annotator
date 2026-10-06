@@ -182,3 +182,68 @@ def test_serve_reports_how_much_was_annotated(image_dir, capsys, monkeypatch):
 
     out = capsys.readouterr().out
     assert "1 boxes on 1 of them" in out
+
+
+@pytest.fixture
+def parent_with_annotated_subfolder(tmp_path):
+    """Images annotated in a sub-folder, as "PPE Dataset/Arun" was."""
+    from PIL import Image
+
+    from auto_annotator.schema import Annotation, Box
+    from auto_annotator.store import Project
+
+    parent = tmp_path / "PPE Dataset"
+    child = parent / "Arun"
+    child.mkdir(parents=True)
+    for index in range(4):
+        Image.new("RGB", (640, 480)).save(child / f"shot_{index}.jpg")
+
+    project = Project(child, classes=["helmet"])
+    for path in project.paths():
+        project.set_annotations(path, [Annotation("helmet", Box(0.2, 0.2, 0.5, 0.5))])
+    return parent, child
+
+
+def test_a_sub_folder_annotated_on_its_own_is_detected(parent_with_annotated_subfolder):
+    from auto_annotator.store import Project
+
+    parent, _ = parent_with_annotated_subfolder
+    outer = Project(parent)
+    assert len(outer) == 4, "the images are visible from the parent"
+    assert outer.annotated_records() == [], "but their annotations are not"
+    assert outer.nested_projects() == ["Arun"]
+
+
+def test_exporting_the_parent_explains_why_it_is_empty(parent_with_annotated_subfolder, tmp_path, capsys):
+    """This printed a split-ratio warning before, which pointed nowhere useful."""
+    parent, _ = parent_with_annotated_subfolder
+    assert main(["export", str(parent), "-f", "yolo", "-o", str(tmp_path / "out")]) == 1
+
+    error = capsys.readouterr().err
+    assert "nothing was exported" in error
+    assert "Arun" in error, "it should name the folder that has the annotations"
+    assert "hashing" not in error, "the split ratios are not the problem here"
+
+
+def test_exporting_the_annotated_sub_folder_works(parent_with_annotated_subfolder, tmp_path, capsys):
+    _, child = parent_with_annotated_subfolder
+    out = tmp_path / "dataset"
+    assert main(["export", str(child), "-f", "yolo", "-o", str(out)]) == 0
+
+    assert "4 of 4 images" in capsys.readouterr().out
+    labels = list((out / "labels").rglob("*.txt"))
+    assert len(labels) == 4
+    assert "helmet" in (out / "classes.txt").read_text()
+
+
+def test_an_empty_export_without_sub_projects_suggests_what_to_do(image_dir, tmp_path, capsys):
+    assert main(["export", str(image_dir), "-f", "coco", "-o", str(tmp_path / "x.json")]) == 1
+    error = capsys.readouterr().err
+    assert "nothing was exported" in error
+    assert "--include-empty" in error
+
+
+def test_stats_flags_an_annotated_sub_folder(parent_with_annotated_subfolder, capsys):
+    parent, _ = parent_with_annotated_subfolder
+    assert main(["stats", str(parent)]) == 0
+    assert "Arun" in capsys.readouterr().err

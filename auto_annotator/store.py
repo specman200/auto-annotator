@@ -151,6 +151,7 @@ class Project:
         self.annotation_dir = self.project_dir / "annotations"
         self._lock = threading.RLock()
         self._records: Dict[str, ImageRecord] = {}
+        self._nested: List[str] = []
         self.classes: List[str] = list(classes or [])
         self.settings: Dict[str, Any] = {}
         self._load_project_file()
@@ -203,6 +204,14 @@ class Project:
                 continue
             seen_dirs.add(marker)
 
+            # A folder annotated in its own right keeps its sidecars under its
+            # own .auto-annotator, named relative to itself. Scanning from above
+            # will never find them, so note it and let the caller say so.
+            if PROJECT_DIRNAME in subdirs and Path(directory) != self.image_root:
+                nested = Path(directory).relative_to(self.image_root).as_posix()
+                if nested not in self._nested:
+                    self._nested.append(nested)
+
             subdirs[:] = [
                 name for name in subdirs
                 if name != PROJECT_DIRNAME and not name.startswith(".")
@@ -216,6 +225,16 @@ class Project:
                     report(count, str(full))
                 yield full.relative_to(self.image_root).as_posix()
 
+    def nested_projects(self) -> List[str]:
+        """Sub-folders that were annotated as projects of their own.
+
+        Their annotations are not visible from here: a project reads only its
+        own sidecar folder, and the names inside it are relative to that
+        folder's root.
+        """
+        with self._lock:
+            return list(self._nested)
+
     def rescan(self, progress: Optional[Callable[[int, str], None]] = None) -> List[str]:
         """Pick up images added to the folder since the last scan.
 
@@ -226,6 +245,7 @@ class Project:
         """
         with self._lock:
             found = []
+            self._nested = []
             for rel in self.walk_images(progress):
                 found.append(rel)
                 if rel not in self._records:
